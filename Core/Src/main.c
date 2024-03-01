@@ -61,6 +61,10 @@ FDCAN_TxHeaderTypeDef fdcan1_TxHeader;
 FDCAN_RxHeaderTypeDef fdcan1_RxHeader;
 uint8_t 			  fdcan1_RxData[8];
 
+
+float kp[4] = {1, 1, 1, 1};
+float ki[4] = {0.01, 0.01, 0.01, 0.01};
+float kd[4] = {0.1, 0.1, 0.1, 0.1};
 typedef struct{
 	float actPos[3];
 	float trgPos[3];
@@ -81,6 +85,7 @@ typedef struct{
 
 robotPosStatus gRobotPos;
 motor gMotor[4];
+PID gMotorVelPID;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -239,6 +244,10 @@ int main(void)
   gRobotPos.trgVel[0] = 0;
   gRobotPos.trgVel[1] = 0;
   gRobotPos.trgVel[2] = 0;
+
+  for(uint8_t i=0; i<4; i++){
+	  pid_init(&gMotorVelPID, 1, kp, kd, ki, setpoint, integral_min, integral_max)
+  }
   /* USER CODE END 2 */
 
   /* Infinite loop */
