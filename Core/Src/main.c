@@ -24,6 +24,7 @@
 #include <stdio.h>
 #include "DJI_CANIDList.h"
 #include "R2CANIDList.h"
+#include "pid.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
