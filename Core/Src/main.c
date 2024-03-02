@@ -22,9 +22,13 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include <stdio.h>
+#include <math.h>
+
 #include "DJI_CANIDList.h"
 #include "R2CANIDList.h"
+
 #include "pid.h"
+#include "filter.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -39,9 +43,18 @@
 
 /* Private macro -------------------------------------------------------------*/
 /* USER CODE BEGIN PM */
+#define PI 3.14159265
+
 #define WHEEL_DIAMETER 100 //[mm]
 #define WHEELBASE_LEN 300 //[mm]
 #define TREAD_LEN 200//[mm]
+
+#define M2006_CURRENT_LIMIT 10000
+
+#define CONTROL_CYCLE 1 //[ms]
+
+#define CW -1
+#define CCW 1
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
@@ -62,30 +75,44 @@ FDCAN_RxHeaderTypeDef fdcan1_RxHeader;
 uint8_t 			  fdcan1_RxData[8];
 
 
-float kp[4] = {1, 1, 1, 1};
-float ki[4] = {0.01, 0.01, 0.01, 0.01};
-float kd[4] = {0.1, 0.1, 0.1, 0.1};
 typedef struct{
-	float actPos[3];
-	float trgPos[3];
-	float outPos[3];
-	float actVel[3];
-	float trgVel[3];
-	float outVel[3];
+	double actPos[3];
+	double trgPos[3];
+	double outPos[3];
+	double actVel[3];
+	double trgVel[3];
+	double outVel[3];
 } robotPosStatus;
 
 typedef struct{
 	uint16_t CANID;
 	uint8_t motorID;
-	float trgVel;
-	float actVel;
-	float outVel;
-	float angle;//[rad]
+	uint8_t polarity;
+	double trgVel;
+	double actVel;
+	double outVel;
+	double angle;//[rad]
 }motor;
 
+typedef struct{
+	double trgVel;
+	double actVel;
+	double outVel;
+}wheel;
+
+
+double kp[4] = {12, 12, 12, 12};
+double ki[4] = {0, 0, 0, 0};
+double kd[4] = {0, 0, 0, 0};
+double integral_min[4] = {-30, -30, -30, -30};
+double integral_max[4] = {30, 30, 30, 30};
+
+
+NHK2024_Low_Pass_Filter_Settings* gLPFsettings;
 robotPosStatus gRobotPos;
-motor gMotor[4];
-PID gMotorVelPID;
+motor gMotors[4];
+wheel gWheels[4];
+PID gMotorVelPID[4];
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -96,7 +123,9 @@ static void MX_FDCAN3_Init(void);
 static void MX_TIM17_Init(void);
 static void MX_FDCAN1_Init(void);
 /* USER CODE BEGIN PFP */
-void CAN_Motordrive(int16_t vel[]);
+void CAN_Motordrive(int32_t vel[]);
+void RobotControllerInit();
+void MotorControllerInit(void);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -118,88 +147,61 @@ void InverseKinematics(robotPosStatus *robotPos, motor wheelMotor[]){
 		for(uint8_t j=0; j<3; j++){
 			wheelMotor[i].trgVel += A[i][j] * robotPos->trgVel[j] / WHEEL_DIAMETER;
 		}
-		printf("%d:%f\r\n", i, wheelMotor[i].trgVel);
+		//printf("%d:%f\r\n", i, wheelMotor[i].trgVel);
 	}
 }
 
 void HAL_FDCAN_RxFifo0Callback(FDCAN_HandleTypeDef *hfdcan, uint32_t RxFifo0ITs) {
-
-	//printf("FIFO0 callback\r\n");
-	if(hfdcan == &hfdcan1){
-		if (HAL_FDCAN_GetRxMessage(hfdcan, FDCAN_RX_FIFO0, &fdcan1_RxHeader, fdcan1_RxData) != HAL_OK) {
-			Error_Handler();
-		}
-		if(fdcan1_RxHeader.Identifier == CANID_ROBOT_VEL){
-			for(uint8_t i=0; i<3; i++){
-				gRobotPos.trgVel[i] = fdcan1_RxData[i] - 127;
+	if ((RxFifo0ITs & FDCAN_IT_RX_FIFO0_NEW_MESSAGE) != RESET) {
+		//printf("FIFO0 callback\r\n");
+		if(hfdcan == &hfdcan1){
+			if (HAL_FDCAN_GetRxMessage(hfdcan, FDCAN_RX_FIFO0, &fdcan1_RxHeader, fdcan1_RxData) != HAL_OK) {
+				Error_Handler();
 			}
-		}
+			if(fdcan1_RxHeader.Identifier == CANID_ROBOT_VEL){
+				for(uint8_t i=0; i<3; i++){
+					gRobotPos.trgVel[i] = fdcan1_RxData[i] - 127;
+				}
+			}
 
-		//printf("RxData: %x\r\n", fdcan1_RxData[0]);
+			//printf("RxData: %x\r\n", fdcan1_RxData[0]);
+		}
 	}
 }
 
 void HAL_FDCAN_RxFifo1Callback(FDCAN_HandleTypeDef *hfdcan, uint32_t RxFifo1ITs) {
 	//printf("FIFO1 callback\r\n");
-	if (hfdcan == &hfdcan3) {
-		if (HAL_FDCAN_GetRxMessage(hfdcan, FDCAN_RX_FIFO1, &fdcan3_RxHeader, fdcan3_RxData) != HAL_OK) {
-			Error_Handler();
-		}
+	if ((RxFifo1ITs & FDCAN_IT_RX_FIFO1_NEW_MESSAGE) != RESET) {
+		if (hfdcan == &hfdcan3) {
+			if (HAL_FDCAN_GetRxMessage(hfdcan, FDCAN_RX_FIFO1, &fdcan3_RxHeader, fdcan3_RxData) != HAL_OK) {
+				Error_Handler();
+			}
 
+			//Convert data from C610 into float velocity
+			uint8_t motorID = fdcan3_RxHeader.Identifier - DJI_CANID_TX0 - 1;
+			//printf("motorID:%d\r\n", motorID);
+			if(motorID<4){
+				int16_t intVel;
+				intVel = fdcan3_RxData[2]<<8 | fdcan3_RxData[3];
+				gMotors[motorID].actVel = (double)intVel;
+			}
+		}
 	}
 }
 
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
-	{
-		if(htim == &htim17){
 
-
-			InverseKinematics(&gRobotPos, gMotor);
-			int16_t vel[4] = {};
-			uint8_t gain = 4;
-			for(uint8_t i=0; i<4; i++){
-				vel[i] = gain * gMotor[i].trgVel;
-			}
-			CAN_Motordrive(vel);
-			//printf("Timer callback\r\n");
+	if(htim == &htim17){
+		//printf("Timer callback\r\n");
+		int32_t output[4] = {};
+		for(uint8_t i=0; i<4; i++){
+			output[i] = pid_compute(&gMotorVelPID[i], gMotors[i].actVel);
 		}
+		CAN_Motordrive(output);
 	}
 }
 
-void CAN_Motordrive(int16_t vel[])
-{
-	int i;
-	uint8_t TxData[8];
-	for(i=0; i<4; i++){
-		if(vel[i]<-10000)vel[i]=-10000;
-		else if(vel[i]>10000)vel[i]=10000;
-		TxData[i*2]=vel[i]>>8;//上位ビ
-		TxData[i*2+1]=vel[i]&0x00FF;//下位ビ
-	}
 
-
-	fdcan3_TxHeader.IdType = FDCAN_STANDARD_ID;
-	fdcan3_TxHeader.TxFrameType = FDCAN_DATA_FRAME;
-	fdcan3_TxHeader.DataLength = FDCAN_DLC_BYTES_8;
-	fdcan3_TxHeader.ErrorStateIndicator = FDCAN_ESI_ACTIVE;
-	fdcan3_TxHeader.BitRateSwitch = FDCAN_BRS_OFF;
-	fdcan3_TxHeader.FDFormat = FDCAN_CLASSIC_CAN;
-	fdcan3_TxHeader.TxEventFifoControl = FDCAN_NO_TX_EVENTS;
-	fdcan3_TxHeader.MessageMarker = 0;
-	fdcan3_TxHeader.Identifier = DJI_CANID_TX0;
-
-	if (HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan3, &fdcan3_TxHeader, TxData) != HAL_OK) {
-		/* Transmission request Error */
-		Error_Handler();
-	}
-	//HAL_Delay(10);
-}
-
-int _write(int file, char *ptr, int len)
-{
-    HAL_UART_Transmit(&hlpuart1,(uint8_t *)ptr,len,10);
-    return len;
-}
 /* USER CODE END 0 */
 
 /**
@@ -236,24 +238,22 @@ int main(void)
   MX_TIM17_Init();
   MX_FDCAN1_Init();
   /* USER CODE BEGIN 2 */
+  RobotControllerInit();
+  MotorControllerInit();
   printf("Initialized\r\n");
   HAL_TIM_Base_Start_IT(&htim17);
-  for(uint8_t i=0; i<4; i++){
-	  gMotor[i].trgVel = 0;
-  }
-  gRobotPos.trgVel[0] = 0;
-  gRobotPos.trgVel[1] = 0;
-  gRobotPos.trgVel[2] = 0;
 
-  for(uint8_t i=0; i<4; i++){
-	  pid_init(&gMotorVelPID, 1, kp, kd, ki, setpoint, integral_min, integral_max)
-  }
+
+
+
+
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)
   {
+
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
@@ -555,7 +555,70 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
+void CAN_Motordrive(int32_t vel[])
+{
+	int i;
+	uint8_t TxData[8];
+	for(i=0; i<4; i++){
 
+		if(vel[i]<-1*M2006_CURRENT_LIMIT)vel[i]=-1*M2006_CURRENT_LIMIT;
+		else if(vel[i]>M2006_CURRENT_LIMIT)vel[i]=M2006_CURRENT_LIMIT;
+		TxData[i*2]=vel[i]>>8;//上位ビ
+		TxData[i*2+1]=vel[i]&0x00FF;//下位ビ
+	}
+
+
+	fdcan3_TxHeader.IdType = FDCAN_STANDARD_ID;
+	fdcan3_TxHeader.TxFrameType = FDCAN_DATA_FRAME;
+	fdcan3_TxHeader.DataLength = FDCAN_DLC_BYTES_8;
+	fdcan3_TxHeader.ErrorStateIndicator = FDCAN_ESI_ACTIVE;
+	fdcan3_TxHeader.BitRateSwitch = FDCAN_BRS_OFF;
+	fdcan3_TxHeader.FDFormat = FDCAN_CLASSIC_CAN;
+	fdcan3_TxHeader.TxEventFifoControl = FDCAN_NO_TX_EVENTS;
+	fdcan3_TxHeader.MessageMarker = 0;
+	fdcan3_TxHeader.Identifier = DJI_CANID_TX0;
+
+	if (HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan3, &fdcan3_TxHeader, TxData) != HAL_OK) {
+		/* Transmission request Error */
+		Error_Handler();
+	}
+}
+
+int _write(int file, char *ptr, int len)
+{
+    HAL_UART_Transmit(&hlpuart1,(uint8_t *)ptr,len,10);
+    return len;
+}
+
+void RobotControllerInit(void){
+	for(uint8_t i=0; i<3; i++){
+		gRobotPos.actPos[i] = 0;
+		gRobotPos.actVel[i] = 0;
+		gRobotPos.trgPos[i] = 0;
+		gRobotPos.trgVel[i] = 0;
+		gRobotPos.outPos[i] = 0;
+		gRobotPos.outVel[i] = 0;
+
+		//pid_init(&gRobotVelPID[i], CONTROL_CYCLE, robotVelKp[i], robotVelKd[i], robotVelKi[i], 0);
+		//pid_init(&gRobotPosPID[i], CONTROL_CYCLE, robotPosKp[i], robotPosKd[i], robotPosKi[i], 0);
+
+	}
+}
+
+void MotorControllerInit(void){
+	for(uint8_t i=0; i<4; i++){
+		gMotors[i].polarity = CW;
+		gMotors[i].CANID = DJI_CANID_0;
+		gMotors[i].trgVel = 0;
+		gMotors[i].actVel = 0;
+		gMotors[i].outVel = 0;
+		gMotors[i].angle = 0;
+		gMotors[i].motorID = 0;
+		pid_init(&gMotorVelPID[i], CONTROL_CYCLE, kp[i], kd[i], ki[i], 0, integral_min[i], integral_max[i]);
+	}
+
+	gLPFsettings = low_pass_filter_init(0.001, 1e3);
+}
 /* USER CODE END 4 */
 
 /**
