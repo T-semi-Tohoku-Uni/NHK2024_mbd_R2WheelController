@@ -46,8 +46,8 @@
 #define PI 3.14159265
 
 #define WHEEL_DIAMETER 100 //[mm]
-#define WHEELBASE_LEN 300 //[mm]
-#define TREAD_LEN 200//[mm]
+#define WHEELBASE_LEN 260 //[mm]
+#define TREAD_LEN 245//[mm]
 
 #define M2006_CURRENT_LIMIT 10000
 
@@ -87,16 +87,18 @@ typedef struct{
 typedef struct{
 	uint16_t CANID;
 	uint8_t motorID;
-	uint8_t rotDir;
+	int8_t rotDir;
 	double trgVel;
 	double actVel;
 	double outVel;
 	double angle;//[rad]
 	double reductionRatio;
+	double actCurrent;
+	PID velPID;
 }motor;
 
 typedef struct{
-	double wheelDiameter;
+	double diameter;
 	double trgVel;
 	double actVel;
 	double outVel;
@@ -124,6 +126,7 @@ robotPosStatus gRobotPos;
 motor gMotors[4];
 wheel gWheels[4];
 PID gMotorVelPID[4];
+robotPhyParam gRobotPhy;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -137,8 +140,9 @@ static void MX_FDCAN1_Init(void);
 void CAN_Motordrive(int32_t vel[]);
 void RobotControllerInit(void);
 void MotorControllerInit(void);
-void WheelInit(void);
-void ConvertWheelMotor(wheel *wheels, motor *motors);
+void RobotPhyParamInit(void);
+void ConvertWheel2Motor(wheel *wheels, motor *motors);
+void Update(void);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -165,7 +169,14 @@ void InverseKinematics(robotPosStatus *robotPos, motor wheelMotor[]){
 }
 
 void ConvertWheel2Motor(wheel *wheels, motor *motors){
+	for(uint8_t i=0; i<4; i++){
+		double M2W_Ratio =  motors[i].rotDir * PI * wheels[i].diameter / 60 / motors[i].reductionRatio;
+		//Convert actual (angle) velocity
+		wheels[i].actVel = motors[i].actVel * M2W_Ratio;
 
+		//Convert target (angle) velocity
+		motors[i].trgVel = wheels[i].trgVel / M2W_Ratio;
+	}
 }
 
 void HAL_FDCAN_RxFifo0Callback(FDCAN_HandleTypeDef *hfdcan, uint32_t RxFifo0ITs) {
@@ -194,13 +205,16 @@ void HAL_FDCAN_RxFifo1Callback(FDCAN_HandleTypeDef *hfdcan, uint32_t RxFifo1ITs)
 				Error_Handler();
 			}
 
-			//Convert data from C610 into float velocity
 			uint8_t motorID = fdcan3_RxHeader.Identifier - DJI_CANID_TX0 - 1;
 			//printf("motorID:%d\r\n", motorID);
 			if(motorID<4){
-				int16_t intVel;
-				intVel = fdcan3_RxData[2]<<8 | fdcan3_RxData[3];
-				gMotors[motorID].actVel = (double)intVel;
+				int16_t intbuff;
+				//get actual angle velocity of motor from C610
+				intbuff = fdcan3_RxData[2]<<8 | fdcan3_RxData[3];
+				gMotors[motorID].actVel = (double)intbuff;
+				//get actual torque current of motor
+				intbuff = fdcan3_RxData[4]<<8 | fdcan3_RxData[5];
+				gMotors[motorID].actCurrent = (double)intbuff;
 			}
 		}
 	}
@@ -210,12 +224,23 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
 
 	if(htim == &htim17){
 		//printf("Timer callback\r\n");
-		int32_t output[4] = {};
+		int32_t output[4];
+		gMotors[0].velPID.setpoint = 1000;
 		for(uint8_t i=0; i<4; i++){
-			output[i] = pid_compute(&gMotorVelPID[i], gMotors[i].actVel);
+			output[i] = pid_compute(&gMotors[i].velPID, gMotors[i].actVel);
 		}
+
 		CAN_Motordrive(output);
 	}
+}
+
+void Update(void){
+	for(uint8_t i=0; i<4; i++){
+		gMotors[i]
+		gMotors[i].velPID.setpoint = gMotors[i].trgVel;
+
+	}
+	ConvertWheel2Motor(gRobotPhy.wheels, gMotors);
 }
 
 
@@ -257,6 +282,7 @@ int main(void)
   /* USER CODE BEGIN 2 */
   RobotControllerInit();
   MotorControllerInit();
+  RobotPhyParamInit();
   printf("Initialized\r\n");
   HAL_TIM_Base_Start_IT(&htim17);
 
@@ -631,19 +657,24 @@ void MotorControllerInit(void){
 		gMotors[i].outVel = 0;
 		gMotors[i].angle = 0;
 		gMotors[i].motorID = 0;
-		pid_init(&gMotorVelPID[i], CONTROL_CYCLE, kp[i], kd[i], ki[i], 0, integral_min[i], integral_max[i]);
+		gMotors[i].reductionRatio = 36;
+		pid_init(&gMotors[i].velPID, CONTROL_CYCLE, kp[i], kd[i], ki[i], 0, integral_min[i], integral_max[i]);
 	}
 
 	gLPFsettings = low_pass_filter_init(0.001, 1e3);
 }
 
-void WheelInit(void){
+void RobotPhyParamInit(void){
+	gRobotPhy.inertia = 1;
+	gRobotPhy.mass = 1;
+	gRobotPhy.treadLen = TREAD_LEN;
+	gRobotPhy.wheelBaseLen = WHEELBASE_LEN;
 	for(uint8_t i=0; i<4; i++){
-		gWheels[i].actVel = 0;
-		gWheels[i].friction = 1;
-		gWheels[i].outVel = 0;
-		gWheels[i].trgVel = 0;
-		gWheels[i].wheelDiameter = WHEEL_DIAMETER;
+		gRobotPhy.wheels[i].actVel = 0;
+		gRobotPhy.wheels[i].friction = 1;
+		gRobotPhy.wheels[i].outVel = 0;
+		gRobotPhy.wheels[i].trgVel = 0;
+		gRobotPhy.wheels[i].diameter = WHEEL_DIAMETER;
 	}
 }
 /* USER CODE END 4 */
