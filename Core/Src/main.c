@@ -252,14 +252,9 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
 }
 
 void Update(void){
-	gRobotPos.trgVel[0] = 1500;
-	gRobotPos.trgVel[1] = 1500;
 	ConvertWheel2Motor(gRobotPhy.wheels, gMotors);
 	ForwardKinematics(&gRobotPos, gRobotPhy.wheels, &gRobotPhy);
 	InverseKinematics(&gRobotPos, gRobotPhy.wheels, &gRobotPhy);
-
-	printf("x:%f\n y:%f\n r:%f\r\n", gRobotPos.actVel[0], gRobotPos.actVel[1], gRobotPos.actVel[2]);
-
 
 	ConvertWheel2Motor(gRobotPhy.wheels, gMotors);
 	for(uint8_t i=0; i<4; i++){
