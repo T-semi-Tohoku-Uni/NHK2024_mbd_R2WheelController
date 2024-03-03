@@ -223,10 +223,12 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
 	if(htim == &htim17){
 		//printf("Timer callback\r\n");
 		int32_t output[4];
-		gMotors[0].velPID.setpoint = 1000;
+		Update();
+
 		for(uint8_t i=0; i<4; i++){
 			output[i] = pid_compute(&gMotors[i].velPID, gMotors[i].actVel);
 		}
+
 
 		CAN_Motordrive(output);
 	}
@@ -234,10 +236,13 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
 
 void Update(void){
 	for(uint8_t i=0; i<4; i++){
-		gMotors[i].velPID.setpoint = gMotors[i].trgVel;
+		gRobotPhy.wheels[i].trgVel = 200;
 
 	}
 	ConvertWheel2Motor(gRobotPhy.wheels, gMotors);
+	for(uint8_t i=0; i<4; i++){
+		gMotors[i].velPID.setpoint = gMotors[i].trgVel;
+	}
 }
 
 
@@ -282,9 +287,6 @@ int main(void)
   RobotPhyParamInit();
   printf("Initialized\r\n");
   HAL_TIM_Base_Start_IT(&htim17);
-
-
-
 
 
   /* USER CODE END 2 */
