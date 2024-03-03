@@ -139,6 +139,7 @@ void CAN_Motordrive(int32_t vel[]);
 //Convert Functions
 void ConvertWheel2Motor(wheel *wheels, motor *motors);
 void InverseKinematics(robotPosStatus *robotPos, wheel wheel[], robotPhyParam *robotPhy);
+void ForwardKinematics(robotPosStatus *robotPos, wheel wheel[], robotPhyParam *robotPhy);
 
 //Sequence Functions
 void Update(void);
@@ -146,9 +147,21 @@ void Update(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+//convert functions
+void ConvertWheel2Motor(wheel *wheels, motor *motors){
+	for(uint8_t i=0; i<4; i++){
+		double M2W_Ratio =  motors[i].rotDir * PI * wheels[i].diameter / 60 / motors[i].reductionRatio;
+		//Convert actual (angle) velocity
+		wheels[i].actVel = motors[i].actVel * M2W_Ratio;
+
+		//Convert target (angle) velocity
+		motors[i].trgVel = wheels[i].trgVel / M2W_Ratio;
+	}
+}
+
 void InverseKinematics(robotPosStatus *robotPos, wheel wheel[], robotPhyParam *robotPhy){
 	//座標変換行�??
-	float wheelParam = (robotPhy->wheelBaseLen + robotPhy->treadLen) / 2;
+	const float wheelParam = (robotPhy->wheelBaseLen + robotPhy->treadLen) / 2;
 	const float A[4][3] = {
 			{-1,  1, wheelParam},
 			{-1, -1, wheelParam},
@@ -165,17 +178,24 @@ void InverseKinematics(robotPosStatus *robotPos, wheel wheel[], robotPhyParam *r
 	}
 }
 
-void ConvertWheel2Motor(wheel *wheels, motor *motors){
-	for(uint8_t i=0; i<4; i++){
-		double M2W_Ratio =  motors[i].rotDir * PI * wheels[i].diameter / 60 / motors[i].reductionRatio;
-		//Convert actual (angle) velocity
-		wheels[i].actVel = motors[i].actVel * M2W_Ratio;
+void ForwardKinematics(robotPosStatus *robotPos, wheel wheel[], robotPhyParam *robotPhy){
+	const float wheelParam = (robotPhy->wheelBaseLen + robotPhy->treadLen) / 1;
+	const float gain = 0.25;
+	const float A[3][4] = {
+		{-1, -1, 1, 1},
+		{1, -1, -1, 1},
+		{1/wheelParam, 1/wheelParam, 1/wheelParam, 1/wheelParam}
+	};
 
-		//Convert target (angle) velocity
-		motors[i].trgVel = wheels[i].trgVel / M2W_Ratio;
+	for(uint8_t i=0; i<3; i++){
+	robotPos->actVel[i] = 0;
+		for(uint8_t j=0; j<4; j++){
+			robotPos->actVel[i] += gain * A[i][j] * wheel[j].actVel;
+		}
 	}
 }
 
+//Call Back
 void HAL_FDCAN_RxFifo0Callback(FDCAN_HandleTypeDef *hfdcan, uint32_t RxFifo0ITs) {
 	if ((RxFifo0ITs & FDCAN_IT_RX_FIFO0_NEW_MESSAGE) != RESET) {
 		//printf("FIFO0 callback\r\n");
@@ -232,9 +252,14 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
 }
 
 void Update(void){
-	for(uint8_t i=0; i<4; i++){
-		InverseKinematics(&gRobotPos, gRobotPhy.wheels, &gRobotPhy);
-	}
+	gRobotPos.trgVel[0] = 1500;
+	gRobotPos.trgVel[1] = 1500;
+	ConvertWheel2Motor(gRobotPhy.wheels, gMotors);
+	ForwardKinematics(&gRobotPos, gRobotPhy.wheels, &gRobotPhy);
+	InverseKinematics(&gRobotPos, gRobotPhy.wheels, &gRobotPhy);
+
+	printf("x:%f\n y:%f\n r:%f\r\n", gRobotPos.actVel[0], gRobotPos.actVel[1], gRobotPos.actVel[2]);
+
 
 	ConvertWheel2Motor(gRobotPhy.wheels, gMotors);
 	for(uint8_t i=0; i<4; i++){
