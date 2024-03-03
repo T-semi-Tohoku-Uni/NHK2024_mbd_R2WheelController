@@ -164,7 +164,6 @@ void InverseKinematics(robotPosStatus *robotPos, motor wheelMotor[]){
 		for(uint8_t j=0; j<3; j++){
 			wheelMotor[i].trgVel += A[i][j] * robotPos->trgVel[j] / WHEEL_DIAMETER;
 		}
-		//printf("%d:%f\r\n", i, wheelMotor[i].trgVel);
 	}
 }
 
@@ -206,7 +205,6 @@ void HAL_FDCAN_RxFifo1Callback(FDCAN_HandleTypeDef *hfdcan, uint32_t RxFifo1ITs)
 			}
 
 			uint8_t motorID = fdcan3_RxHeader.Identifier - DJI_CANID_TX0 - 1;
-			//printf("motorID:%d\r\n", motorID);
 			if(motorID<4){
 				int16_t intbuff;
 				//get actual angle velocity of motor from C610
@@ -236,7 +234,6 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
 
 void Update(void){
 	for(uint8_t i=0; i<4; i++){
-		gMotors[i]
 		gMotors[i].velPID.setpoint = gMotors[i].trgVel;
 
 	}
