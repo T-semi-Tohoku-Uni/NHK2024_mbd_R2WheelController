@@ -82,6 +82,7 @@ typedef struct{
 	double actVel[3];
 	double trgVel[3];
 	double outVel[3];
+	PID velPID[3];
 } robotPosStatus;
 
 typedef struct{
@@ -156,6 +157,7 @@ void ConvertWheel2Motor(wheel *wheels, motor *motors){
 
 		//Convert target (angle) velocity
 		motors[i].trgVel = wheels[i].trgVel / M2W_Ratio;
+		motors[i].outVel = wheels[i].outVel / M2W_Ratio;
 	}
 }
 
@@ -171,9 +173,8 @@ void InverseKinematics(robotPosStatus *robotPos, wheel wheel[], robotPhyParam *r
 
 	for(uint8_t i=0; i<4; i++){
 		wheel[i].trgVel = 0;
-
 		for(uint8_t j=0; j<3; j++){
-			wheel[i].trgVel += A[i][j] * robotPos->trgVel[j];
+			wheel[i].trgVel += A[i][j] * robotPos->outVel[j];
 		}
 	}
 }
@@ -241,12 +242,29 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
 	if(htim == &htim17){
 		//printf("Timer callback\r\n");
 		int32_t output[4];
-		Update();
 
+		gRobotPos.trgVel[2] = 1;
+
+		ConvertWheel2Motor(gRobotPhy.wheels, gMotors);
+		ForwardKinematics(&gRobotPos, gRobotPhy.wheels, &gRobotPhy);
+
+		for(uint8_t i=0; i<3; i++){
+			gRobotPos.velPID[i].setpoint = gRobotPos.trgVel[i];
+			gRobotPos.outVel[i] = gRobotPos.trgVel[i] + pid_compute(&gRobotPos.velPID[i], gRobotPos.actVel[i]);
+		}
+
+		InverseKinematics(&gRobotPos, gRobotPhy.wheels, &gRobotPhy);
+		ConvertWheel2Motor(gRobotPhy.wheels, gMotors);
+
+		//motor PID
 		for(uint8_t i=0; i<4; i++){
+			gMotors[i].velPID.setpoint = gMotors[i].trgVel;
 			output[i] = pid_compute(&gMotors[i].velPID, gMotors[i].actVel);
 		}
 
+		//printf("x:%f\n y:%f\n r*100:%f\r\n", gRobotPos.actVel[0], gRobotPos.actVel[1], gRobotPos.actVel[2] * 100);
+
+		//transmit to C610
 		CAN_Motordrive(output);
 	}
 }
@@ -254,10 +272,17 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
 void Update(void){
 	ConvertWheel2Motor(gRobotPhy.wheels, gMotors);
 	ForwardKinematics(&gRobotPos, gRobotPhy.wheels, &gRobotPhy);
+
+	//gRobot
 	InverseKinematics(&gRobotPos, gRobotPhy.wheels, &gRobotPhy);
 
 	ConvertWheel2Motor(gRobotPhy.wheels, gMotors);
 	for(uint8_t i=0; i<4; i++){
+		//robot coordination set
+		if(i<4){
+			gRobotPos.velPID[i].setpoint = gRobotPos.trgVel[i];
+		}
+		//motor parameter set
 		gMotors[i].velPID.setpoint = gMotors[i].trgVel;
 	}
 }
@@ -299,7 +324,6 @@ int main(void)
   /* USER CODE BEGIN 2 */
   RobotControllerInit();
   MotorControllerInit();
-  RobotPosInit();
   RobotPhyParamInit();
   printf("Initialized\r\n");
   HAL_TIM_Base_Start_IT(&htim17);
@@ -649,6 +673,12 @@ int _write(int file, char *ptr, int len)
 }
 
 void RobotControllerInit(void){
+	double velKp[3] = {0.3, 0.3, 0.3};
+	double velKi[3] = {0, 0, 0};
+	double velKd[3] = {0, 0, 0};
+	double velIntegral_min[3] = {-5, -5, -10};
+	double velIntegral_max[3] = {5, 5, 	10};
+
 	for(uint8_t i=0; i<3; i++){
 		gRobotPos.actPos[i] = 0;
 		gRobotPos.actVel[i] = 0;
@@ -657,7 +687,7 @@ void RobotControllerInit(void){
 		gRobotPos.outPos[i] = 0;
 		gRobotPos.outVel[i] = 0;
 
-		//pid_init(&gRobotVelPID[i], CONTROL_CYCLE, robotVelKp[i], robotVelKd[i], robotVelKi[i], 0);
+		pid_init(&gRobotPos.velPID[i], CONTROL_CYCLE, velKp[i], velKi[i], velKd[i], 0, velIntegral_min[i], velIntegral_max[i]);
 		//pid_init(&gRobotPosPID[i], CONTROL_CYCLE, robotPosKp[i], robotPosKd[i], robotPosKi[i], 0);
 
 	}
@@ -702,16 +732,6 @@ void RobotPhyParamInit(void){
 	}
 }
 
-void RobotPosInit(void){
-	for(uint8_t i=0; i<3; i++){
-		gRobotPos.actPos[i] = 0;
-		gRobotPos.actVel[i] = 0;
-		gRobotPos.outPos[i] = 0;
-		gRobotPos.outVel[i] = 0;
-		gRobotPos.trgPos[i] = 0;
-		gRobotPos.trgVel[i] = 0;
-	}
-}
 /* USER CODE END 4 */
 
 /**
