@@ -92,12 +92,15 @@ typedef struct{
 	double actVel;
 	double outVel;
 	double angle;//[rad]
+	double reduction_ratio;
 }motor;
 
 typedef struct{
+	double wheel_diameter;
 	double trgVel;
 	double actVel;
 	double outVel;
+	double friction;
 }wheel;
 
 
@@ -152,7 +155,7 @@ void InverseKinematics(robotPosStatus *robotPos, motor wheelMotor[]){
 	}
 }
 
-void ConvertWheelMotor(wheel *wheels, motor *motors){
+void ConvertWheel2Motor(wheel *wheels, motor *motors){
 
 }
 
