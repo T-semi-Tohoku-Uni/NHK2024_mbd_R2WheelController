@@ -74,7 +74,7 @@ FDCAN_TxHeaderTypeDef fdcan1_TxHeader;
 FDCAN_RxHeaderTypeDef fdcan1_RxHeader;
 uint8_t 			  fdcan1_RxData[8];
 
-
+//The units of angle rate and angle are [rad/s] or [rad]
 typedef struct{
 	double actPos[3];
 	double trgPos[3];
@@ -87,13 +87,13 @@ typedef struct{
 typedef struct{
 	uint16_t CANID;
 	uint8_t motorID;
-	int8_t rotDir;
-	double trgVel;
-	double actVel;
-	double outVel;
+	int8_t rotDir;//rotation direction
+	double trgVel;//target angle velocity [RPM]
+	double actVel;//actual angle velocity [RPM]
+	double outVel;//output
 	double angle;//[rad]
-	double reductionRatio;
-	double actCurrent;
+	double reductionRatio; //@param reduction ratio (1:param)
+	double actCurrent;//actual torque current
 	PID velPID;
 }motor;
 
@@ -102,7 +102,7 @@ typedef struct{
 	double trgVel;
 	double actVel;
 	double outVel;
-	double friction;
+	double friction;//friction coefficient
 }wheel;
 
 typedef struct{
@@ -114,18 +114,9 @@ typedef struct{
 }robotPhyParam;
 
 
-double kp[4] = {12, 12, 12, 12};
-double ki[4] = {0, 0, 0, 0};
-double kd[4] = {0, 0, 0, 0};
-double integral_min[4] = {-30, -30, -30, -30};
-double integral_max[4] = {30, 30, 30, 30};
-
-
 NHK2024_Low_Pass_Filter_Settings* gLPFsettings;
 robotPosStatus gRobotPos;
 motor gMotors[4];
-wheel gWheels[4];
-PID gMotorVelPID[4];
 robotPhyParam gRobotPhy;
 /* USER CODE END PV */
 
@@ -137,32 +128,39 @@ static void MX_FDCAN3_Init(void);
 static void MX_TIM17_Init(void);
 static void MX_FDCAN1_Init(void);
 /* USER CODE BEGIN PFP */
-void CAN_Motordrive(int32_t vel[]);
 void RobotControllerInit(void);
 void MotorControllerInit(void);
+void RobotPosInit(void);
 void RobotPhyParamInit(void);
+
+//CAN communication functions.
+void CAN_Motordrive(int32_t vel[]);
+
+//Convert Functions
 void ConvertWheel2Motor(wheel *wheels, motor *motors);
+void InverseKinematics(robotPosStatus *robotPos, wheel wheel[], robotPhyParam *robotPhy);
+
+//Sequence Functions
 void Update(void);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-void InverseKinematics(robotPosStatus *robotPos, motor wheelMotor[]){
+void InverseKinematics(robotPosStatus *robotPos, wheel wheel[], robotPhyParam *robotPhy){
 	//座標変換行�??
-
-	float wheelParam = (WHEELBASE_LEN + TREAD_LEN) / 2;
+	float wheelParam = (robotPhy->wheelBaseLen + robotPhy->treadLen) / 2;
 	const float A[4][3] = {
-			{ 200, -200, wheelParam},
-			{ 200,  200, wheelParam},
-			{-200,  200, wheelParam},
-			{-200, -200, wheelParam}
+			{-1,  1, wheelParam},
+			{-1, -1, wheelParam},
+			{ 1, -1, wheelParam},
+			{ 1,  1, wheelParam}
 	};
 
 	for(uint8_t i=0; i<4; i++){
-		wheelMotor[i].trgVel = 0;
+		wheel[i].trgVel = 0;
 
 		for(uint8_t j=0; j<3; j++){
-			wheelMotor[i].trgVel += A[i][j] * robotPos->trgVel[j] / WHEEL_DIAMETER;
+			wheel[i].trgVel += A[i][j] * robotPos->trgVel[j];
 		}
 	}
 }
@@ -229,23 +227,20 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
 			output[i] = pid_compute(&gMotors[i].velPID, gMotors[i].actVel);
 		}
 
-
 		CAN_Motordrive(output);
 	}
 }
 
 void Update(void){
 	for(uint8_t i=0; i<4; i++){
-		gRobotPhy.wheels[i].trgVel = 200;
-
+		InverseKinematics(&gRobotPos, gRobotPhy.wheels, &gRobotPhy);
 	}
+
 	ConvertWheel2Motor(gRobotPhy.wheels, gMotors);
 	for(uint8_t i=0; i<4; i++){
 		gMotors[i].velPID.setpoint = gMotors[i].trgVel;
 	}
 }
-
-
 /* USER CODE END 0 */
 
 /**
@@ -284,6 +279,7 @@ int main(void)
   /* USER CODE BEGIN 2 */
   RobotControllerInit();
   MotorControllerInit();
+  RobotPosInit();
   RobotPhyParamInit();
   printf("Initialized\r\n");
   HAL_TIM_Base_Start_IT(&htim17);
@@ -648,6 +644,12 @@ void RobotControllerInit(void){
 }
 
 void MotorControllerInit(void){
+	double kp[4] = {12, 12, 12, 12};
+	double ki[4] = {0, 0, 0, 0};
+	double kd[4] = {0, 0, 0, 0};
+	double integral_min[4] = {-30, -30, -30, -30};
+	double integral_max[4] = {30, 30, 30, 30};
+
 	for(uint8_t i=0; i<4; i++){
 		gMotors[i].rotDir = CW;
 		gMotors[i].CANID = DJI_CANID_0;
@@ -664,16 +666,30 @@ void MotorControllerInit(void){
 }
 
 void RobotPhyParamInit(void){
+	double frictions[4] = {1, 1, 1, 1};
+
 	gRobotPhy.inertia = 1;
 	gRobotPhy.mass = 1;
 	gRobotPhy.treadLen = TREAD_LEN;
 	gRobotPhy.wheelBaseLen = WHEELBASE_LEN;
+
 	for(uint8_t i=0; i<4; i++){
 		gRobotPhy.wheels[i].actVel = 0;
-		gRobotPhy.wheels[i].friction = 1;
+		gRobotPhy.wheels[i].friction = frictions[i];
 		gRobotPhy.wheels[i].outVel = 0;
 		gRobotPhy.wheels[i].trgVel = 0;
 		gRobotPhy.wheels[i].diameter = WHEEL_DIAMETER;
+	}
+}
+
+void RobotPosInit(void){
+	for(uint8_t i=0; i<3; i++){
+		gRobotPos.actPos[i] = 0;
+		gRobotPos.actVel[i] = 0;
+		gRobotPos.outPos[i] = 0;
+		gRobotPos.outVel[i] = 0;
+		gRobotPos.trgPos[i] = 0;
+		gRobotPos.trgVel[i] = 0;
 	}
 }
 /* USER CODE END 4 */
