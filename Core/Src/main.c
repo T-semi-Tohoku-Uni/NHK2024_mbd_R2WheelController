@@ -87,21 +87,29 @@ typedef struct{
 typedef struct{
 	uint16_t CANID;
 	uint8_t motorID;
-	uint8_t polarity;
+	uint8_t rotDir;
 	double trgVel;
 	double actVel;
 	double outVel;
 	double angle;//[rad]
-	double reduction_ratio;
+	double reductionRatio;
 }motor;
 
 typedef struct{
-	double wheel_diameter;
+	double wheelDiameter;
 	double trgVel;
 	double actVel;
 	double outVel;
 	double friction;
 }wheel;
+
+typedef struct{
+	double treadLen;
+	double wheelBaseLen;
+	double mass;
+	double inertia;
+	wheel wheels[4];
+}robotPhyParam;
 
 
 double kp[4] = {12, 12, 12, 12};
@@ -129,6 +137,7 @@ static void MX_FDCAN1_Init(void);
 void CAN_Motordrive(int32_t vel[]);
 void RobotControllerInit(void);
 void MotorControllerInit(void);
+void WheelInit(void);
 void ConvertWheelMotor(wheel *wheels, motor *motors);
 /* USER CODE END PFP */
 
@@ -615,7 +624,7 @@ void RobotControllerInit(void){
 
 void MotorControllerInit(void){
 	for(uint8_t i=0; i<4; i++){
-		gMotors[i].polarity = CW;
+		gMotors[i].rotDir = CW;
 		gMotors[i].CANID = DJI_CANID_0;
 		gMotors[i].trgVel = 0;
 		gMotors[i].actVel = 0;
@@ -626,6 +635,16 @@ void MotorControllerInit(void){
 	}
 
 	gLPFsettings = low_pass_filter_init(0.001, 1e3);
+}
+
+void WheelInit(void){
+	for(uint8_t i=0; i<4; i++){
+		gWheels[i].actVel = 0;
+		gWheels[i].friction = 1;
+		gWheels[i].outVel = 0;
+		gWheels[i].trgVel = 0;
+		gWheels[i].wheelDiameter = WHEEL_DIAMETER;
+	}
 }
 /* USER CODE END 4 */
 
