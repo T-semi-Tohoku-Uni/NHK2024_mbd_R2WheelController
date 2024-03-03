@@ -124,8 +124,9 @@ static void MX_TIM17_Init(void);
 static void MX_FDCAN1_Init(void);
 /* USER CODE BEGIN PFP */
 void CAN_Motordrive(int32_t vel[]);
-void RobotControllerInit();
+void RobotControllerInit(void);
 void MotorControllerInit(void);
+void ConvertWheelMotor(wheel *wheels, motor *motors);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -149,6 +150,10 @@ void InverseKinematics(robotPosStatus *robotPos, motor wheelMotor[]){
 		}
 		//printf("%d:%f\r\n", i, wheelMotor[i].trgVel);
 	}
+}
+
+void ConvertWheelMotor(wheel *wheels, motor *motors){
+
 }
 
 void HAL_FDCAN_RxFifo0Callback(FDCAN_HandleTypeDef *hfdcan, uint32_t RxFifo0ITs) {
