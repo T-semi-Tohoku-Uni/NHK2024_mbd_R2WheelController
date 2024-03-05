@@ -205,8 +205,9 @@ void HAL_FDCAN_RxFifo0Callback(FDCAN_HandleTypeDef *hfdcan, uint32_t RxFifo0ITs)
 				Error_Handler();
 			}
 			if(fdcan1_RxHeader.Identifier == CANID_ROBOT_VEL){
+				float gain[3] = {16, 16, 0.02};
 				for(uint8_t i=0; i<3; i++){
-					gRobotPos.trgVel[i] = (fdcan1_RxData[i] - 127)*16;
+					gRobotPos.trgVel[i] = (fdcan1_RxData[i] - 127)*gain[i];
 				}
 			}
 
