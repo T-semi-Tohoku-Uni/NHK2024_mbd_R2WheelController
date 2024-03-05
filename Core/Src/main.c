@@ -206,7 +206,7 @@ void HAL_FDCAN_RxFifo0Callback(FDCAN_HandleTypeDef *hfdcan, uint32_t RxFifo0ITs)
 			}
 			if(fdcan1_RxHeader.Identifier == CANID_ROBOT_VEL){
 				for(uint8_t i=0; i<3; i++){
-					gRobotPos.trgVel[i] = fdcan1_RxData[i] - 127;
+					gRobotPos.trgVel[i] = (fdcan1_RxData[i] - 127)*16;
 				}
 			}
 
