@@ -265,24 +265,6 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
 		CAN_Motordrive(output);
 	}
 }
-
-
-void Update(void){
-	ConvertWheel2Motor(gRobotPhy.wheels, gMotors);
-	ForwardKinematics(&gRobotPos, gRobotPhy.wheels, &gRobotPhy);
-
-	InverseKinematics(&gRobotPos, gRobotPhy.wheels, &gRobotPhy);
-
-	ConvertWheel2Motor(gRobotPhy.wheels, gMotors);
-	for(uint8_t i=0; i<4; i++){
-		//robot coordination set
-		if(i<4){
-			gRobotPos.velPID[i].setpoint = gRobotPos.trgVel[i];
-		}
-		//motor parameter set
-		gMotors[i].velPID.setpoint = gMotors[i].trgVel;
-	}
-}
 /* USER CODE END 0 */
 
 /**
