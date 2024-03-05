@@ -243,7 +243,6 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
 		//printf("Timer callback\r\n");
 		int32_t output[4];
 
-		gRobotPos.trgVel[2] = 1;
 
 		ConvertWheel2Motor(gRobotPhy.wheels, gMotors);
 		ForwardKinematics(&gRobotPos, gRobotPhy.wheels, &gRobotPhy);
@@ -262,18 +261,16 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
 			output[i] = pid_compute(&gMotors[i].velPID, gMotors[i].actVel);
 		}
 
-		//printf("x:%f\n y:%f\n r*100:%f\r\n", gRobotPos.actVel[0], gRobotPos.actVel[1], gRobotPos.actVel[2] * 100);
-
 		//transmit to C610
 		CAN_Motordrive(output);
 	}
 }
 
+
 void Update(void){
 	ConvertWheel2Motor(gRobotPhy.wheels, gMotors);
 	ForwardKinematics(&gRobotPos, gRobotPhy.wheels, &gRobotPhy);
 
-	//gRobot
 	InverseKinematics(&gRobotPos, gRobotPhy.wheels, &gRobotPhy);
 
 	ConvertWheel2Motor(gRobotPhy.wheels, gMotors);
@@ -335,7 +332,6 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
@@ -673,11 +669,11 @@ int _write(int file, char *ptr, int len)
 }
 
 void RobotControllerInit(void){
-	double velKp[3] = {0.3, 0.3, 0.3};
-	double velKi[3] = {0, 0, 0};
+	double velKp[3] = {0.3, 0.3, 1.6};
+	double velKi[3] = {0, 0, 0.1};
 	double velKd[3] = {0, 0, 0};
-	double velIntegral_min[3] = {-5, -5, -10};
-	double velIntegral_max[3] = {5, 5, 	10};
+	double velIntegral_min[3] = {-5, -5, -3};
+	double velIntegral_max[3] = {5, 5, 	3};
 
 	for(uint8_t i=0; i<3; i++){
 		gRobotPos.actPos[i] = 0;
@@ -687,9 +683,7 @@ void RobotControllerInit(void){
 		gRobotPos.outPos[i] = 0;
 		gRobotPos.outVel[i] = 0;
 
-		pid_init(&gRobotPos.velPID[i], CONTROL_CYCLE, velKp[i], velKi[i], velKd[i], 0, velIntegral_min[i], velIntegral_max[i]);
-		//pid_init(&gRobotPosPID[i], CONTROL_CYCLE, robotPosKp[i], robotPosKd[i], robotPosKi[i], 0);
-
+		pid_init(&gRobotPos.velPID[i], CONTROL_CYCLE, velKp[i], velKd[i], velKi[i], 0, velIntegral_min[i], velIntegral_max[i]);
 	}
 }
 
