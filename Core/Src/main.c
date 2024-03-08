@@ -145,6 +145,8 @@ void ConvertWheel2Motor(wheel *wheels, motor *motors);
 void InverseKinematics(robotPosStatus *robotPos, wheel wheel[], robotPhyParam *robotPhy);
 void ForwardKinematics(robotPosStatus *robotPos, wheel wheel[], robotPhyParam *robotPhy);
 
+//Feed Back Functions
+void RobotVelFB(void);
 //Sequence Functions
 void Update(void);
 /* USER CODE END PFP */
@@ -272,6 +274,30 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
 
 		//transmit to C610
 		CAN_Motordrive(output);
+		RobotVelFB();
+	}
+}
+
+void RobotVelFB(void){
+	uint8_t fdcan1_TxData[3] = {};
+	double gain[3] = {16, 16, 0.02};
+	for(uint8_t i=0; i<3; i++){
+		if(gRobotPos.actVel[i]/16 + 127 > 255){
+			fdcan1_TxData[i] = 255;
+			continue;
+		}
+		else if(gRobotPos.actVel[i]/16 + 127 < 0){
+			fdcan1_TxData[i] = 0;
+			continue;
+		}
+		int8_t buffer = gRobotPos.actVel[i]/gain[i] + 127;
+		fdcan1_TxData[i] |= buffer;
+	}
+	fdcan1_TxHeader.DataLength = FDCAN_DLC_BYTES_3;
+	fdcan1_TxHeader.Identifier = 0x700;
+
+	if(HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan1, &fdcan1_TxHeader, fdcan1_TxData) != HAL_OK){
+		Error_Handler();
 	}
 }
 /* USER CODE END 0 */
@@ -438,6 +464,16 @@ static void MX_FDCAN1_Init(void)
 	if (HAL_FDCAN_ActivateNotification(&hfdcan1, FDCAN_IT_RX_FIFO0_NEW_MESSAGE, 0) != HAL_OK) {
 		Error_Handler();
 	}
+
+	fdcan1_TxHeader.IdType = FDCAN_STANDARD_ID;
+	fdcan1_TxHeader.TxFrameType = FDCAN_DATA_FRAME;
+	fdcan1_TxHeader.DataLength = FDCAN_DLC_BYTES_3;
+	fdcan1_TxHeader.ErrorStateIndicator = FDCAN_ESI_ACTIVE;
+	fdcan1_TxHeader.BitRateSwitch = FDCAN_BRS_ON;
+	fdcan1_TxHeader.FDFormat = FDCAN_FD_CAN;
+	fdcan1_TxHeader.TxEventFifoControl = FDCAN_NO_TX_EVENTS;
+	fdcan1_TxHeader.MessageMarker = 0;
+	fdcan1_TxHeader.Identifier = 0x700;
 
   /* USER CODE END FDCAN1_Init 2 */
 
