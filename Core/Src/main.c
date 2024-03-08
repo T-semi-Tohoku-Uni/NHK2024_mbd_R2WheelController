@@ -294,7 +294,7 @@ void RobotVelFB(void){
 		fdcan1_TxData[i] |= buffer;
 	}
 	fdcan1_TxHeader.DataLength = FDCAN_DLC_BYTES_3;
-	fdcan1_TxHeader.Identifier = 0x700;
+	fdcan1_TxHeader.Identifier = CANID_ROBOT_VEL_FB;
 
 	if(HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan1, &fdcan1_TxHeader, fdcan1_TxData) != HAL_OK){
 		Error_Handler();
