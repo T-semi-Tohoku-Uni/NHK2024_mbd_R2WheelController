@@ -27,6 +27,7 @@
 #include "DJI_CANIDList.h"
 #include "R2CANIDList.h"
 
+#include "bno055.h"
 #include "pid.h"
 #include "filter.h"
 /* USER CODE END Includes */
@@ -139,6 +140,7 @@ void RobotControllerInit(void);
 void MotorControllerInit(void);
 void RobotPosInit(void);
 void RobotPhyParamInit(void);
+void BNO055_Init(void);
 
 //CAN communication functions.
 void CAN_Motordrive(int32_t vel[]);
@@ -213,10 +215,10 @@ void HAL_FDCAN_RxFifo0Callback(FDCAN_HandleTypeDef *hfdcan, uint32_t RxFifo0ITs)
 				Error_Handler();
 			}
 			if(fdcan1_RxHeader.Identifier == CANID_ROBOT_VEL){
-				if (HAL_IWDG_Refresh(&hiwdg) != HAL_OK)
+				/*if (HAL_IWDG_Refresh(&hiwdg) != HAL_OK)
 				{
 					Error_Handler();
-				}
+				}*/
 
 				float gain[3] = {16, 16, 0.02};
 				for(uint8_t i=0; i<3; i++){
@@ -277,7 +279,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
 
 		//transmit to C610
 		CAN_Motordrive(output);
-		RobotVelFB();
+		//RobotVelFB();
 	}
 }
 
@@ -338,7 +340,7 @@ int main(void)
   MX_FDCAN3_Init();
   MX_TIM17_Init();
   MX_FDCAN1_Init();
-  MX_IWDG_Init();
+  //MX_IWDG_Init();
   MX_I2C1_Init();
   /* USER CODE BEGIN 2 */
   RobotControllerInit();
@@ -346,7 +348,9 @@ int main(void)
   RobotPhyParamInit();
   printf("Initialized\r\n");
   HAL_TIM_Base_Start_IT(&htim17);
+  BNO055_Init();
 
+  float euler[3];
 
   /* USER CODE END 2 */
 
@@ -354,6 +358,14 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
+	  uint8_t Rxbuffer[10] = {};
+	  HAL_I2C_Mem_Read(&hi2c1, BNO055_I2C_ADDR1 << 1, 0x1A, I2C_MEMADD_SIZE_8BIT, Rxbuffer, 6, 100);
+	  for(uint8_t i=0; i<3; i++){
+		  euler[i] = (float)((Rxbuffer[i*2+1] << 8) | Rxbuffer[i*2])/16;
+		  printf("x:%f, y:%f, z:%f\r\n", euler[0], euler[1], euler[2]);
+
+	  }
+	  HAL_Delay(1000);
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
@@ -796,6 +808,43 @@ void RobotControllerInit(void){
 		pid_init(&gRobotPos.velPID[i], CONTROL_CYCLE, velKp[i], velKd[i], velKi[i], 0, velIntegral_min[i], velIntegral_max[i]);
 	}
 }
+
+void BNO055_Init(void){
+	HAL_Delay(700);
+	uint8_t Txbuff;
+	uint8_t Rxbuff;
+	//char message[20];
+
+
+
+	//Txbuff = 0x20;
+	//HAL_I2C_Mem_Write(&hi2c1, 0x28 << 1, 0x3F, I2C_MEMADD_SIZE_8BIT, &Txbuff, 1, 100); //system trigger
+
+	Txbuff = 0x00;
+	HAL_I2C_Mem_Write(&hi2c1, 0x28 << 1, 0x3E, I2C_MEMADD_SIZE_8BIT, &Txbuff, 1, 100); //power mode
+
+	Txbuff = 0x0C;
+	HAL_I2C_Mem_Write(&hi2c1, 0x28 << 1, 0x3D, I2C_MEMADD_SIZE_8BIT, &Txbuff, 1, 100);//using Nine Degree of Freedom mode
+
+
+
+
+	HAL_I2C_Mem_Read(&hi2c1, 0x28 << 1, 0x3A, I2C_MEMADD_SIZE_8BIT, &Rxbuff, 1, 100);
+	printf("Error:%d\r\n", Rxbuff);
+
+	HAL_I2C_Mem_Read(&hi2c1, 0x28 << 1, 0x00, I2C_MEMADD_SIZE_8BIT, &Rxbuff, 1, 100);
+	printf("ID:%d\r\n", Rxbuff);
+
+	HAL_I2C_Mem_Read(&hi2c1, 0x28 << 1, 0x34, I2C_MEMADD_SIZE_8BIT, &Rxbuff, 1, 100);
+	printf("Temp:%d\r\n", Rxbuff);
+
+
+	//print_int(30, "testing");
+	HAL_Delay(100);
+
+
+}
+
 
 void MotorControllerInit(void){
 	double kp[4] = {12, 12, 12, 12};
