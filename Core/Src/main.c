@@ -117,7 +117,6 @@ typedef struct{
 }robotPhyParam;
 
 
-NHK2024_Low_Pass_Filter_Settings* gLPFsettings;
 robotPosStatus gRobotPos;
 motor gMotors[4];
 robotPhyParam gRobotPhy;
@@ -340,6 +339,16 @@ int main(void)
   RobotControllerInit();
   MotorControllerInit();
   RobotPhyParamInit();
+  HAL_Delay(100);
+  while(gMotors[0].actVel != 0 && gMotors[1].actVel != 0 && gMotors[2].actVel != 0 && gMotors[3].actVel != 0){
+	  HAL_Delay(200);
+	  int32_t vel[4] = {};
+	  CAN_Motordrive(vel);
+	  if (HAL_IWDG_Refresh(&hiwdg) != HAL_OK)
+	  {
+		Error_Handler();
+	  }
+  }
   printf("Initialized\r\n");
   HAL_TIM_Base_Start_IT(&htim17);
 
@@ -763,8 +772,6 @@ void MotorControllerInit(void){
 		gMotors[i].reductionRatio = 36;
 		pid_init(&gMotors[i].velPID, CONTROL_CYCLE, kp[i], kd[i], ki[i], 0, integral_min[i], integral_max[i]);
 	}
-
-	gLPFsettings = low_pass_filter_init(0.001, 1e3);
 }
 
 void RobotPhyParamInit(void){
