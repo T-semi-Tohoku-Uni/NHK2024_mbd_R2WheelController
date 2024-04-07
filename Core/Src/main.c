@@ -56,6 +56,9 @@
 
 #define CW -1
 #define CCW 1
+
+#define ON_SLOPE 1
+#define OFF_SLOPE 0
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
@@ -118,6 +121,8 @@ typedef struct{
 	double inertia;
 	wheel wheels[4];
 }robotPhyParam;
+
+uint8_t slope_state = 0;
 
 robotPosStatus gRobotPos;
 motor gMotors[4];
@@ -290,6 +295,12 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
 		    }
 			gRobotPos.actPos[2] = euler[0];
 			//printf("%f\r\n", euler[0]);
+
+
+			if (euler[1] < 80){
+				printf("On slope\r\n");
+				slope_state = ON_SLOPE;
+			}
 		}
 		count++;
 	}
