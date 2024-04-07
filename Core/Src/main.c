@@ -119,8 +119,6 @@ typedef struct{
 	wheel wheels[4];
 }robotPhyParam;
 
-
-NHK2024_Low_Pass_Filter_Settings* gLPFsettings;
 robotPosStatus gRobotPos;
 motor gMotors[4];
 robotPhyParam gRobotPhy;
@@ -280,6 +278,19 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
 		//transmit to C610
 		CAN_Motordrive(output);
 		//RobotVelFB();
+
+		static uint8_t count = 0;
+		if(count == 10){
+			uint8_t Rxbuffer[10] = {};
+			float euler[3] = {};
+		    HAL_I2C_Mem_Read(&hi2c1, BNO055_I2C_ADDR1 << 1, 0x1A, I2C_MEMADD_SIZE_8BIT, Rxbuffer, 6, 100);
+		    count = 0;
+		    for(uint8_t i=0; i<3; i++){
+			    euler[i] = (float)((Rxbuffer[i*2+1] << 8) | Rxbuffer[i*2])/16;
+		    }
+			gRobotPos.actPos[2] = euler[0];
+		}
+		count++;
 	}
 }
 
@@ -358,15 +369,8 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-	  uint8_t Rxbuffer[10] = {};
-	  HAL_I2C_Mem_Read(&hi2c1, BNO055_I2C_ADDR1 << 1, 0x1A, I2C_MEMADD_SIZE_8BIT, Rxbuffer, 6, 100);
-	  for(uint8_t i=0; i<3; i++){
-		  euler[i] = (float)((Rxbuffer[i*2+1] << 8) | Rxbuffer[i*2])/16;
-		  printf("x:%f, y:%f, z:%f\r\n", euler[0], euler[1], euler[2]);
 
-	  }
-	  HAL_Delay(1000);
-    /* USER CODE END WHILE */
+	  /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
   }
@@ -864,8 +868,6 @@ void MotorControllerInit(void){
 		gMotors[i].reductionRatio = 36;
 		pid_init(&gMotors[i].velPID, CONTROL_CYCLE, kp[i], kd[i], ki[i], 0, integral_min[i], integral_max[i]);
 	}
-
-	gLPFsettings = low_pass_filter_init(0.001, 1e3);
 }
 
 void RobotPhyParamInit(void){
