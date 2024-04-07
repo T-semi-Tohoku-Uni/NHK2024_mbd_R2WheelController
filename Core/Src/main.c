@@ -277,7 +277,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
 
 		//transmit to C610
 		CAN_Motordrive(output);
-		//RobotVelFB();
+		RobotVelFB();
 
 		static uint8_t count = 0;
 		if(count == 10){
@@ -289,6 +289,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
 			    euler[i] = (float)((Rxbuffer[i*2+1] << 8) | Rxbuffer[i*2])/16;
 		    }
 			gRobotPos.actPos[2] = euler[0];
+			//printf("%f\r\n", euler[0]);
 		}
 		count++;
 	}
@@ -354,14 +355,24 @@ int main(void)
   //MX_IWDG_Init();
   MX_I2C1_Init();
   /* USER CODE BEGIN 2 */
+  //MX_IWDG_Init();
   RobotControllerInit();
   MotorControllerInit();
   RobotPhyParamInit();
+  HAL_Delay(100);
+  while(gMotors[0].actVel != 0 && gMotors[1].actVel != 0 && gMotors[2].actVel != 0 && gMotors[3].actVel != 0){
+	  HAL_Delay(200);
+	  int32_t vel[4] = {};
+	  CAN_Motordrive(vel);
+	  if (HAL_IWDG_Refresh(&hiwdg) != HAL_OK)
+	  {
+		Error_Handler();
+	  }
+  }
   printf("Initialized\r\n");
   HAL_TIM_Base_Start_IT(&htim17);
   BNO055_Init();
-
-  float euler[3];
+  MX_IWDG_Init();
 
   /* USER CODE END 2 */
 
@@ -369,7 +380,6 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-
 	  /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
