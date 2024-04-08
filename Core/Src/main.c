@@ -57,8 +57,8 @@
 #define CW -1
 #define CCW 1
 
-#define ON_SLOPE 1
-#define OFF_SLOPE 0
+#define TRUE 1
+#define FALSE 0
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
@@ -122,7 +122,7 @@ typedef struct{
 	wheel wheels[4];
 }robotPhyParam;
 
-uint8_t slope_state = 0;
+uint8_t is_on_slope = FALSE;
 
 robotPosStatus gRobotPos;
 motor gMotors[4];
@@ -202,7 +202,7 @@ void ForwardKinematics(robotPosStatus *robotPos, wheel wheel[], robotPhyParam *r
 	};
 
 	for(uint8_t i=0; i<3; i++){
-	robotPos->actVel[i] = 0;
+		robotPos->actVel[i] = 0;
 		for(uint8_t j=0; j<4; j++){
 			robotPos->actVel[i] += gain * A[i][j] * wheel[j].actVel;
 		}
@@ -299,7 +299,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
 
 			if (euler[1] < 80){
 				printf("On slope\r\n");
-				slope_state = ON_SLOPE;
+				is_on_slope = TRUE;
 			}
 		}
 		count++;
