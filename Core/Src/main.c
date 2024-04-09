@@ -124,6 +124,8 @@ typedef struct{
 
 uint8_t is_on_slope = FALSE;
 
+
+Low_Pass_Filter_Settings *gyroLPFsetting;
 robotPosStatus gRobotPos;
 motor gMotors[4];
 robotPhyParam gRobotPhy;
@@ -155,6 +157,8 @@ void ForwardKinematics(robotPosStatus *robotPos, wheel wheel[], robotPhyParam *r
 
 //Feed Back Functions
 void RobotVelFB(void);
+void SlopeStateSend(uint8_t state);
+
 //Sequence Functions
 void Update(void);
 /* USER CODE END PFP */
@@ -218,10 +222,10 @@ void HAL_FDCAN_RxFifo0Callback(FDCAN_HandleTypeDef *hfdcan, uint32_t RxFifo0ITs)
 				Error_Handler();
 			}
 			if(fdcan1_RxHeader.Identifier == CANID_ROBOT_VEL){
-				/*if (HAL_IWDG_Refresh(&hiwdg) != HAL_OK)
+				if (HAL_IWDG_Refresh(&hiwdg) != HAL_OK)
 				{
 					Error_Handler();
-				}*/
+				}
 
 				float gain[3] = {16, 16, 0.02};
 				for(uint8_t i=0; i<3; i++){
@@ -285,29 +289,48 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
 		RobotVelFB();
 
 		static uint8_t count = 0;
+
 		if(count == 10){
 			uint8_t Rxbuffer[10] = {};
 			float euler[3] = {};
 		    HAL_I2C_Mem_Read(&hi2c1, BNO055_I2C_ADDR1 << 1, 0x1A, I2C_MEMADD_SIZE_8BIT, Rxbuffer, 6, 100);
 		    count = 0;
 		    for(uint8_t i=0; i<3; i++){
-			    euler[i] = (float)((Rxbuffer[i*2+1] << 8) | Rxbuffer[i*2])/16;
+			    euler[i] = (float)((Rxbuffer[i*2+1] << 8) | Rxbuffer[i*2])/16/180*PI;
 		    }
 			gRobotPos.actPos[2] = euler[0];
-			//printf("%f\r\n", euler[0]);
 
+			double posture = low_pass_filter_update(gyroLPFsetting, euler[1]);
 
-			if (euler[1] < 80){
-				printf("On slope\r\n");
+			uint8_t buff = 600 * (euler[1] - 1.2);
+
+			if (posture < 1.45){
 				is_on_slope = TRUE;
+				//printf("On slope\r\n");
 			}
+			else{
+				is_on_slope = FALSE;
+			}
+
+			SlopeStateSend(buff);
 		}
 		count++;
 	}
 }
 
+void SlopeStateSend(uint8_t state){
+	fdcan1_TxHeader.DataLength = FDCAN_DLC_BYTES_1;
+	fdcan1_TxHeader.Identifier = CANID_SLOPE_DETECTION;
+
+	printf("send:%d\r\n", state);
+	uint8_t fdcan1_TxData[1] = {state};
+	if(HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan1, &fdcan1_TxHeader, fdcan1_TxData) != HAL_OK){
+		Error_Handler();
+	}
+}
+
 void RobotVelFB(void){
-	uint8_t fdcan1_TxData[3] = {};
+	uint8_t fdcan1_TxData[4] = {};
 	double gain[3] = {16, 16, 0.02};
 	for(uint8_t i=0; i<3; i++){
 		if(gRobotPos.actVel[i]/16 + 127 > 255){
@@ -321,7 +344,9 @@ void RobotVelFB(void){
 		int8_t buffer = gRobotPos.actVel[i]/gain[i] + 127;
 		fdcan1_TxData[i] |= buffer;
 	}
-	fdcan1_TxHeader.DataLength = FDCAN_DLC_BYTES_3;
+
+	fdcan1_TxData[3] = (uint8_t)(40 * gRobotPos.actPos[2]);
+	fdcan1_TxHeader.DataLength = FDCAN_DLC_BYTES_4;
 	fdcan1_TxHeader.Identifier = CANID_ROBOT_VEL_FB;
 
 	if(HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan1, &fdcan1_TxHeader, fdcan1_TxData) != HAL_OK){
@@ -848,6 +873,9 @@ void BNO055_Init(void){
 	Txbuff = 0x00;
 	HAL_I2C_Mem_Write(&hi2c1, 0x28 << 1, 0x3E, I2C_MEMADD_SIZE_8BIT, &Txbuff, 1, 100); //power mode
 
+	Txbuff = 0b00010010;
+	HAL_I2C_Mem_Write(&hi2c1, 0x28 << 1, BNO055_AXIS_MAP_CONFIG_ADDR, I2C_MEMADD_SIZE_8BIT, &Txbuff, 1, 100);
+
 	Txbuff = 0x0C;
 	HAL_I2C_Mem_Write(&hi2c1, 0x28 << 1, 0x3D, I2C_MEMADD_SIZE_8BIT, &Txbuff, 1, 100);//using Nine Degree of Freedom mode
 
@@ -864,8 +892,14 @@ void BNO055_Init(void){
 	printf("Temp:%d\r\n", Rxbuff);
 
 
-	//print_int(30, "testing");
+	double control_cycle = 0.01;
+	double cutoff_freq = 0.1;
+
+	gyroLPFsetting = low_pass_filter_init(cutoff_freq, control_cycle);
+
 	HAL_Delay(100);
+
+
 
 
 }
