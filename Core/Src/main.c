@@ -122,6 +122,12 @@ typedef struct{
 	wheel wheels[4];
 }robotPhyParam;
 
+typedef struct{
+	double upward;
+	double plane;
+	double slope;
+}field_placement;
+
 uint8_t is_on_slope = FALSE;
 
 
