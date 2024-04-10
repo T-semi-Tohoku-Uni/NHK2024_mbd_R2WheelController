@@ -23,6 +23,7 @@
 /* USER CODE BEGIN Includes */
 #include <stdio.h>
 #include <math.h>
+#include <string.h>
 
 #include "DJI_CANIDList.h"
 #include "R2CANIDList.h"
@@ -84,7 +85,7 @@ uint8_t 			  fdcan1_RxData[8];
 
 //The units of angle rate and angle are [rad/s] or [rad]
 typedef struct{
-	double actPos[5];
+	double actPos[3];
 	double trgPos[3];
 	double outPos[3];
 	double actVel[3];
@@ -126,6 +127,9 @@ typedef struct{
 	double upward;
 	double plane;
 	double slope;
+	double planeGrvVector[3];
+	double slopeGrvVector[3];
+	double slopeAngleDiff;
 }field_placement;
 
 uint8_t is_on_slope = FALSE;
@@ -135,6 +139,7 @@ Low_Pass_Filter_Settings *gyroLPFsetting;
 robotPosStatus gRobotPos;
 motor gMotors[4];
 robotPhyParam gRobotPhy;
+double gGrvVector[3] = {};
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -164,6 +169,7 @@ void CAN_Motordrive(int32_t vel[]);
 void ConvertWheel2Motor(wheel *wheels, motor *motors);
 void InverseKinematics(robotPosStatus *robotPos, wheel wheel[], robotPhyParam *robotPhy);
 void ForwardKinematics(robotPosStatus *robotPos, wheel wheel[], robotPhyParam *robotPhy);
+double CalcVectorAngle(double vector1[3], double vector2[3]);
 
 //Feed Back Functions
 void RobotVelFB(void);
@@ -301,20 +307,32 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
 		static uint8_t count = 0;
 
 		if(count == 10){
+			count = 0;
 			uint8_t Rxbuffer[10] = {};
+
+			//read euler angle from BNO
 			float euler[3] = {};
 		    HAL_I2C_Mem_Read(&hi2c1, BNO055_I2C_ADDR1 << 1, 0x1A, I2C_MEMADD_SIZE_8BIT, Rxbuffer, 6, 100);
-		    count = 0;
+
 		    for(uint8_t i=0; i<3; i++){
 			    euler[i] = (float)((Rxbuffer[i*2+1] << 8) | Rxbuffer[i*2])/16/180*PI;
-			    gRobotPos.actPos[i+2] = euler[i];
 		    }
+		    gRobotPos.actPos[2] = euler[0];
+
+		    //read gravity vector from BNO055
+		    HAL_I2C_Mem_Read(&hi2c1, BNO055_I2C_ADDR1 << 1, BNO055_GRAVITY_DATA_X_LSB_ADDR, I2C_MEMADD_SIZE_8BIT, Rxbuffer, BNO055_GRAVITY_XYZ_DATA_SIZE, 100);
+
+			for(uint8_t i=0; i<3; i++){
+				int16_t b = (Rxbuffer[i*2+1] << 8) | Rxbuffer[i*2];
+				gGrvVector[i] = (float)b / 100;
+			}
+
+			//printf("Grv vector x:%f / y:%f / z:%f\r\n", gGrvVector[0], gGrvVector[1], gGrvVector[2]);
+
 
 			double posture = low_pass_filter_update(gyroLPFsetting, euler[1]);
 
-			//printf("raw_data:%f\n posture:%f\r\n", euler[1], posture);
 
-			uint8_t buff = 600 * (euler[1] - 1.2);
 
 			if (posture < 1.49){
 				is_on_slope = TRUE;
@@ -915,6 +933,7 @@ void BNO055_Init(void){
 
 	HAL_Delay(100);
 
+	/*
 	printf("BNO Calibration\r\n");
 	for(uint8_t i = 0; i < 10; i++){
 		HAL_I2C_Mem_Read(&hi2c1, 0x28 << 1, BNO055_ACCEL_CALIB_STAT_REG, I2C_MEMADD_SIZE_8BIT, &Rxbuff, 1, 100);
@@ -922,7 +941,7 @@ void BNO055_Init(void){
 	}
 
 	printf("Calibration Stats: %x\r\n", Rxbuff);
-
+*/
 }
 
 
@@ -967,10 +986,15 @@ void FieldPlacementInit(void){
 	gFieldPlacement.plane = PI/2;
 	gFieldPlacement.upward = 0;
 	gFieldPlacement.slope = PI/2 - 0.1;
+	gFieldPlacement.slopeAngleDiff = 0.1;
+	for(uint8_t i = 0; i < 3; i++){
+		gFieldPlacement.planeGrvVector[i] = 0;
+		gFieldPlacement.slopeGrvVector[i] = 0;
+	}
 }
 void FieldPlacementUpdate(void){
 	printf("Initializing field placement...\r\n");
-	printf("Put the robot facing upward of the field");
+	printf("Put the robot facing upward of the field\r\n");
 
 	char header[24] = "Calibration starts in";
 	CountDown(header, 5);
@@ -979,7 +1003,7 @@ void FieldPlacementUpdate(void){
 	field_placement fieldPlacementTemp;
 
 	fieldPlacementTemp.upward = gRobotPos.actPos[2];
-	fieldPlacementTemp.plane = gRobotPos.actPos[3];
+	memmove(fieldPlacementTemp.planeGrvVector, gGrvVector, 24);
 
 	for(uint8_t i = 1; i < 200; i++){
 		if((gRobotPos.actVel[0] != 0 || gRobotPos.actVel[1] != 0) || gRobotPos.actVel[2] != 0){
@@ -987,13 +1011,15 @@ void FieldPlacementUpdate(void){
 			return ;
 		}
 		fieldPlacementTemp.upward = (fieldPlacementTemp.upward * i + gRobotPos.actPos[2]) / (i+1);
-		fieldPlacementTemp.plane = (fieldPlacementTemp.plane * i + gRobotPos.actPos[3]) / (i+1);
+		for(uint8_t j = 0; j<3; j++){
+			fieldPlacementTemp.planeGrvVector[j] = (fieldPlacementTemp.planeGrvVector[j] * i + gGrvVector[j]) / (i+1);
+		}
 
 		HAL_Delay(10);
 	}
 
 	printf("Pass: get field upward:%f\r\n", fieldPlacementTemp.upward);
-	printf("Pass: get field plane:%f\r\n", fieldPlacementTemp.plane);
+	printf("Pass: get plane grv vector: X:%f / Y:%f / Z:%f\r\n", fieldPlacementTemp.planeGrvVector[0], fieldPlacementTemp.planeGrvVector[1], fieldPlacementTemp.planeGrvVector[2]);
 
 	printf("Put the robot on the slope\r\n");
 	HAL_Delay(1000);
@@ -1007,17 +1033,25 @@ void FieldPlacementUpdate(void){
 			printf("Error: failed to get field slope\r\n");
 			return ;
 		}
-		fieldPlacementTemp.slope = (fieldPlacementTemp.slope * i + gRobotPos.actPos[3]) / (i+1);
+		for(uint8_t j = 0; j<3; j++){
+			fieldPlacementTemp.slopeGrvVector[j] = (fieldPlacementTemp.slopeGrvVector[j] * i + gGrvVector[j]) / (i+1);
+		}
 		HAL_Delay(10);
 	}
 
-	printf("Pass: get field slope:%f\r\n", fieldPlacementTemp.slope);
+	printf("Pass: get slope grv vector: X:%f / Y:%f / Z:%f\r\n", fieldPlacementTemp.slopeGrvVector[0], fieldPlacementTemp.slopeGrvVector[1], fieldPlacementTemp.slopeGrvVector[2]);
 
 	gFieldPlacement.plane = fieldPlacementTemp.plane;
 	gFieldPlacement.slope = fieldPlacementTemp.slope;
 	gFieldPlacement.upward = fieldPlacementTemp.upward;
+	memmove(gFieldPlacement.planeGrvVector, fieldPlacementTemp.planeGrvVector, 24);
+	memmove(gFieldPlacement.slopeGrvVector, fieldPlacementTemp.slopeGrvVector, 24);
+
+	gFieldPlacement.slopeAngleDiff = CalcVectorAngle(gFieldPlacement.planeGrvVector, gFieldPlacement.slopeGrvVector);
+
 	printf("Field data updated\r\n");
-	printf("RESULT\n upward: %6.4f / slope:%6.4f / plane:%6.4f\r\n", gFieldPlacement.upward, gFieldPlacement.slope, gFieldPlacement.plane);
+	printf("---------RESULT----------\n upward: %6.4f / slope angle:%6.4f\r\n", gFieldPlacement.upward, gFieldPlacement.slopeAngleDiff);
+	printf("Plane grv vector: X:%f / Y:%f / Z:%f\r\n", fieldPlacementTemp.planeGrvVector[0], fieldPlacementTemp.planeGrvVector[1], fieldPlacementTemp.planeGrvVector[2]);
 
 
 }
@@ -1028,6 +1062,27 @@ void CountDown(char header[], uint8_t time){
 		printf("%s %d sec\r\n", header, time);
 		HAL_Delay(1000);
 	}
+}
+
+double CalcVectorAngle(double vector1[3], double vector2[3]){
+	double dotp = 0;//dot product
+
+	double len1 = 0;//length of vector1
+	double len2 = 0;//length of vector2
+
+	double sqlen1 = 0;//squared length of vector1
+	double sqlen2 = 0;//squared length of vector2
+
+	for(uint8_t i = 0; i < 3; i++){
+		dotp += vector1[i] * vector2[i];
+		sqlen1 += pow(vector1[i], 2);
+		sqlen2 += pow(vector2[i], 2);
+	}
+
+	len1 = sqrt(sqlen1);
+	len2 = sqrt(sqlen2);
+
+	return acos(dotp / (len1 * len2));
 }
 /* USER CODE END 4 */
 
