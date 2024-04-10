@@ -133,6 +133,7 @@ typedef struct{
 }field_placement;
 
 uint8_t is_on_slope = FALSE;
+uint8_t is_field_init = FALSE;
 
 field_placement gFieldPlacement;
 Low_Pass_Filter_Settings *gyroLPFsetting;
@@ -319,7 +320,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
 		    }
 		    gRobotPos.actPos[2] = euler[0];
 
-		    //read gravity vector from BNO055
+		    //read gravity vector from BNO055 for detecting slope
 		    HAL_I2C_Mem_Read(&hi2c1, BNO055_I2C_ADDR1 << 1, BNO055_GRAVITY_DATA_X_LSB_ADDR, I2C_MEMADD_SIZE_8BIT, Rxbuffer, BNO055_GRAVITY_XYZ_DATA_SIZE, 100);
 
 			for(uint8_t i=0; i<3; i++){
@@ -328,21 +329,20 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
 			}
 
 			//printf("Grv vector x:%f / y:%f / z:%f\r\n", gGrvVector[0], gGrvVector[1], gGrvVector[2]);
+			double rawAngle = CalcVectorAngle(gFieldPlacement.planeGrvVector, gGrvVector);
+			double angle = low_pass_filter_update(gyroLPFsetting, rawAngle);
 
-
-			double posture = low_pass_filter_update(gyroLPFsetting, euler[1]);
-
-
-
-			if (posture < 1.49){
-				is_on_slope = TRUE;
-				//printf("On slope\r\n");
+			if(is_field_init == TRUE){
+				//printf("angle:%f\r\n", rawAngle);
+				if (rawAngle > gFieldPlacement.slopeAngleDiff * 0.8){
+					is_on_slope = TRUE;
+					//printf("On slope\r\n");
+				}
+				else{
+					is_on_slope = FALSE;
+				}
+				SlopeStateSend(is_on_slope);
 			}
-			else{
-				is_on_slope = FALSE;
-			}
-
-			SlopeStateSend(is_on_slope);
 		}
 		count++;
 	}
@@ -927,7 +927,7 @@ void BNO055_Init(void){
 
 
 	double control_cycle = 0.01;
-	double cutoff_freq = 3;
+	double cutoff_freq = 0.1;
 
 	gyroLPFsetting = low_pass_filter_init(cutoff_freq, control_cycle);
 
@@ -992,6 +992,7 @@ void FieldPlacementInit(void){
 		gFieldPlacement.slopeGrvVector[i] = 0;
 	}
 }
+
 void FieldPlacementUpdate(void){
 	printf("Initializing field placement...\r\n");
 	printf("Put the robot facing upward of the field\r\n");
@@ -1053,6 +1054,7 @@ void FieldPlacementUpdate(void){
 	printf("---------RESULT----------\n upward: %6.4f / slope angle:%6.4f\r\n", gFieldPlacement.upward, gFieldPlacement.slopeAngleDiff);
 	printf("Plane grv vector: X:%f / Y:%f / Z:%f\r\n", fieldPlacementTemp.planeGrvVector[0], fieldPlacementTemp.planeGrvVector[1], fieldPlacementTemp.planeGrvVector[2]);
 
+	is_field_init = TRUE;
 
 }
 
