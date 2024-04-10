@@ -56,6 +56,9 @@
 
 #define CW -1
 #define CCW 1
+
+#define TRUE 1
+#define FALSE 0
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
@@ -81,7 +84,7 @@ uint8_t 			  fdcan1_RxData[8];
 
 //The units of angle rate and angle are [rad/s] or [rad]
 typedef struct{
-	double actPos[3];
+	double actPos[5];
 	double trgPos[3];
 	double outPos[3];
 	double actVel[3];
@@ -119,6 +122,16 @@ typedef struct{
 	wheel wheels[4];
 }robotPhyParam;
 
+typedef struct{
+	double upward;
+	double plane;
+	double slope;
+}field_placement;
+
+uint8_t is_on_slope = FALSE;
+
+field_placement gFieldPlacement;
+Low_Pass_Filter_Settings *gyroLPFsetting;
 robotPosStatus gRobotPos;
 motor gMotors[4];
 robotPhyParam gRobotPhy;
@@ -139,6 +152,10 @@ void MotorControllerInit(void);
 void RobotPosInit(void);
 void RobotPhyParamInit(void);
 void BNO055_Init(void);
+void FieldPlacementInit(void);
+void CountDown(char header[], uint8_t time);
+
+void FieldPlacementUpdate(void);
 
 //CAN communication functions.
 void CAN_Motordrive(int32_t vel[]);
@@ -150,6 +167,8 @@ void ForwardKinematics(robotPosStatus *robotPos, wheel wheel[], robotPhyParam *r
 
 //Feed Back Functions
 void RobotVelFB(void);
+void SlopeStateSend(uint8_t state);
+
 //Sequence Functions
 void Update(void);
 /* USER CODE END PFP */
@@ -197,7 +216,7 @@ void ForwardKinematics(robotPosStatus *robotPos, wheel wheel[], robotPhyParam *r
 	};
 
 	for(uint8_t i=0; i<3; i++){
-	robotPos->actVel[i] = 0;
+		robotPos->actVel[i] = 0;
 		for(uint8_t j=0; j<4; j++){
 			robotPos->actVel[i] += gain * A[i][j] * wheel[j].actVel;
 		}
@@ -213,10 +232,10 @@ void HAL_FDCAN_RxFifo0Callback(FDCAN_HandleTypeDef *hfdcan, uint32_t RxFifo0ITs)
 				Error_Handler();
 			}
 			if(fdcan1_RxHeader.Identifier == CANID_ROBOT_VEL){
-				/*if (HAL_IWDG_Refresh(&hiwdg) != HAL_OK)
+				if (HAL_IWDG_Refresh(&hiwdg) != HAL_OK)
 				{
 					Error_Handler();
-				}*/
+				}
 
 				float gain[3] = {16, 16, 0.02};
 				for(uint8_t i=0; i<3; i++){
@@ -280,23 +299,50 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
 		RobotVelFB();
 
 		static uint8_t count = 0;
+
 		if(count == 10){
 			uint8_t Rxbuffer[10] = {};
 			float euler[3] = {};
 		    HAL_I2C_Mem_Read(&hi2c1, BNO055_I2C_ADDR1 << 1, 0x1A, I2C_MEMADD_SIZE_8BIT, Rxbuffer, 6, 100);
 		    count = 0;
 		    for(uint8_t i=0; i<3; i++){
-			    euler[i] = (float)((Rxbuffer[i*2+1] << 8) | Rxbuffer[i*2])/16;
+			    euler[i] = (float)((Rxbuffer[i*2+1] << 8) | Rxbuffer[i*2])/16/180*PI;
+			    gRobotPos.actPos[i+2] = euler[i];
 		    }
-			gRobotPos.actPos[2] = euler[0];
-			//printf("%f\r\n", euler[0]);
+
+			double posture = low_pass_filter_update(gyroLPFsetting, euler[1]);
+
+			//printf("raw_data:%f\n posture:%f\r\n", euler[1], posture);
+
+			uint8_t buff = 600 * (euler[1] - 1.2);
+
+			if (posture < 1.49){
+				is_on_slope = TRUE;
+				//printf("On slope\r\n");
+			}
+			else{
+				is_on_slope = FALSE;
+			}
+
+			SlopeStateSend(is_on_slope);
 		}
 		count++;
 	}
 }
 
+void SlopeStateSend(uint8_t state){
+	fdcan1_TxHeader.DataLength = FDCAN_DLC_BYTES_1;
+	fdcan1_TxHeader.Identifier = CANID_SLOPE_DETECTION;
+
+	//printf("send:%d\r\n", state);
+	uint8_t fdcan1_TxData[1] = {state};
+	if(HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan1, &fdcan1_TxHeader, fdcan1_TxData) != HAL_OK){
+		Error_Handler();
+	}
+}
+
 void RobotVelFB(void){
-	uint8_t fdcan1_TxData[3] = {};
+	uint8_t fdcan1_TxData[4] = {};
 	double gain[3] = {16, 16, 0.02};
 	for(uint8_t i=0; i<3; i++){
 		if(gRobotPos.actVel[i]/16 + 127 > 255){
@@ -310,7 +356,9 @@ void RobotVelFB(void){
 		int8_t buffer = gRobotPos.actVel[i]/gain[i] + 127;
 		fdcan1_TxData[i] |= buffer;
 	}
-	fdcan1_TxHeader.DataLength = FDCAN_DLC_BYTES_3;
+
+	fdcan1_TxData[3] = (uint8_t)(40 * gRobotPos.actPos[2]);
+	fdcan1_TxHeader.DataLength = FDCAN_DLC_BYTES_4;
 	fdcan1_TxHeader.Identifier = CANID_ROBOT_VEL_FB;
 
 	if(HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan1, &fdcan1_TxHeader, fdcan1_TxData) != HAL_OK){
@@ -369,10 +417,14 @@ int main(void)
 		Error_Handler();
 	  }
   }
-  printf("Initialized\r\n");
   HAL_TIM_Base_Start_IT(&htim17);
   BNO055_Init();
-  MX_IWDG_Init();
+
+  FieldPlacementInit();
+  FieldPlacementUpdate();
+  //MX_IWDG_Init();
+  printf("Initialized\r\n");
+
 
   /* USER CODE END 2 */
 
@@ -837,6 +889,9 @@ void BNO055_Init(void){
 	Txbuff = 0x00;
 	HAL_I2C_Mem_Write(&hi2c1, 0x28 << 1, 0x3E, I2C_MEMADD_SIZE_8BIT, &Txbuff, 1, 100); //power mode
 
+	Txbuff = 0b00010010;
+	//HAL_I2C_Mem_Write(&hi2c1, 0x28 << 1, BNO055_AXIS_MAP_CONFIG_ADDR, I2C_MEMADD_SIZE_8BIT, &Txbuff, 1, 100);
+
 	Txbuff = 0x0C;
 	HAL_I2C_Mem_Write(&hi2c1, 0x28 << 1, 0x3D, I2C_MEMADD_SIZE_8BIT, &Txbuff, 1, 100);//using Nine Degree of Freedom mode
 
@@ -853,9 +908,20 @@ void BNO055_Init(void){
 	printf("Temp:%d\r\n", Rxbuff);
 
 
-	//print_int(30, "testing");
+	double control_cycle = 0.01;
+	double cutoff_freq = 3;
+
+	gyroLPFsetting = low_pass_filter_init(cutoff_freq, control_cycle);
+
 	HAL_Delay(100);
 
+	printf("BNO Calibration\r\n");
+	for(uint8_t i = 0; i < 10; i++){
+		HAL_I2C_Mem_Read(&hi2c1, 0x28 << 1, BNO055_ACCEL_CALIB_STAT_REG, I2C_MEMADD_SIZE_8BIT, &Rxbuff, 1, 100);
+		HAL_Delay(1000);
+	}
+
+	printf("Calibration Stats: %x\r\n", Rxbuff);
 
 }
 
@@ -897,6 +963,72 @@ void RobotPhyParamInit(void){
 	}
 }
 
+void FieldPlacementInit(void){
+	gFieldPlacement.plane = PI/2;
+	gFieldPlacement.upward = 0;
+	gFieldPlacement.slope = PI/2 - 0.1;
+}
+void FieldPlacementUpdate(void){
+	printf("Initializing field placement...\r\n");
+	printf("Put the robot facing upward of the field");
+
+	char header[24] = "Calibration starts in";
+	CountDown(header, 5);
+	printf("Calibrating\r\n");
+	printf("DO NOT MOVE THE ROBOT\r\n");
+	field_placement fieldPlacementTemp;
+
+	fieldPlacementTemp.upward = gRobotPos.actPos[2];
+	fieldPlacementTemp.plane = gRobotPos.actPos[3];
+
+	for(uint8_t i = 1; i < 200; i++){
+		if((gRobotPos.actVel[0] != 0 || gRobotPos.actVel[1] != 0) || gRobotPos.actVel[2] != 0){
+			printf("Error: failed to get field upward\r\n");
+			return ;
+		}
+		fieldPlacementTemp.upward = (fieldPlacementTemp.upward * i + gRobotPos.actPos[2]) / (i+1);
+		fieldPlacementTemp.plane = (fieldPlacementTemp.plane * i + gRobotPos.actPos[3]) / (i+1);
+
+		HAL_Delay(10);
+	}
+
+	printf("Pass: get field upward:%f\r\n", fieldPlacementTemp.upward);
+	printf("Pass: get field plane:%f\r\n", fieldPlacementTemp.plane);
+
+	printf("Put the robot on the slope\r\n");
+	HAL_Delay(1000);
+	CountDown(header, 10);
+	printf("Calibrating\r\n");
+
+	printf("DO NOT MOVE THE ROBOT\r\n");
+	fieldPlacementTemp.slope = gRobotPos.actPos[3];
+	for(uint8_t i = 1; i < 200; i++){
+		if((gRobotPos.actVel[0] != 0 || gRobotPos.actVel[1] != 0) || gRobotPos.actVel[2] != 0){
+			printf("Error: failed to get field slope\r\n");
+			return ;
+		}
+		fieldPlacementTemp.slope = (fieldPlacementTemp.slope * i + gRobotPos.actPos[3]) / (i+1);
+		HAL_Delay(10);
+	}
+
+	printf("Pass: get field slope:%f\r\n", fieldPlacementTemp.slope);
+
+	gFieldPlacement.plane = fieldPlacementTemp.plane;
+	gFieldPlacement.slope = fieldPlacementTemp.slope;
+	gFieldPlacement.upward = fieldPlacementTemp.upward;
+	printf("Field data updated\r\n");
+	printf("RESULT\n upward: %6.4f / slope:%6.4f / plane:%6.4f\r\n", gFieldPlacement.upward, gFieldPlacement.slope, gFieldPlacement.plane);
+
+
+}
+
+void CountDown(char header[], uint8_t time){
+	if(time < 1) return;
+	for(;time >=1 ; time--){
+		printf("%s %d sec\r\n", header, time);
+		HAL_Delay(1000);
+	}
+}
 /* USER CODE END 4 */
 
 /**
