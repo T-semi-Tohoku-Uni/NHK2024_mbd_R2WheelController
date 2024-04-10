@@ -302,9 +302,11 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
 
 			double posture = low_pass_filter_update(gyroLPFsetting, euler[1]);
 
+			printf("raw_data:%f\n posture:%f\r\n", euler[1], posture);
+
 			uint8_t buff = 600 * (euler[1] - 1.2);
 
-			if (posture < 1.45){
+			if (posture < 1.49){
 				is_on_slope = TRUE;
 				//printf("On slope\r\n");
 			}
@@ -312,7 +314,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
 				is_on_slope = FALSE;
 			}
 
-			SlopeStateSend(buff);
+			SlopeStateSend(is_on_slope);
 		}
 		count++;
 	}
@@ -322,7 +324,7 @@ void SlopeStateSend(uint8_t state){
 	fdcan1_TxHeader.DataLength = FDCAN_DLC_BYTES_1;
 	fdcan1_TxHeader.Identifier = CANID_SLOPE_DETECTION;
 
-	printf("send:%d\r\n", state);
+	//printf("send:%d\r\n", state);
 	uint8_t fdcan1_TxData[1] = {state};
 	if(HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan1, &fdcan1_TxHeader, fdcan1_TxData) != HAL_OK){
 		Error_Handler();
@@ -408,7 +410,7 @@ int main(void)
   printf("Initialized\r\n");
   HAL_TIM_Base_Start_IT(&htim17);
   BNO055_Init();
-  MX_IWDG_Init();
+  //MX_IWDG_Init();
 
   /* USER CODE END 2 */
 
@@ -874,7 +876,7 @@ void BNO055_Init(void){
 	HAL_I2C_Mem_Write(&hi2c1, 0x28 << 1, 0x3E, I2C_MEMADD_SIZE_8BIT, &Txbuff, 1, 100); //power mode
 
 	Txbuff = 0b00010010;
-	HAL_I2C_Mem_Write(&hi2c1, 0x28 << 1, BNO055_AXIS_MAP_CONFIG_ADDR, I2C_MEMADD_SIZE_8BIT, &Txbuff, 1, 100);
+	//HAL_I2C_Mem_Write(&hi2c1, 0x28 << 1, BNO055_AXIS_MAP_CONFIG_ADDR, I2C_MEMADD_SIZE_8BIT, &Txbuff, 1, 100);
 
 	Txbuff = 0x0C;
 	HAL_I2C_Mem_Write(&hi2c1, 0x28 << 1, 0x3D, I2C_MEMADD_SIZE_8BIT, &Txbuff, 1, 100);//using Nine Degree of Freedom mode
@@ -893,7 +895,7 @@ void BNO055_Init(void){
 
 
 	double control_cycle = 0.01;
-	double cutoff_freq = 0.1;
+	double cutoff_freq = 3;
 
 	gyroLPFsetting = low_pass_filter_init(cutoff_freq, control_cycle);
 
