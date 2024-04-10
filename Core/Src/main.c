@@ -915,8 +915,13 @@ void BNO055_Init(void){
 
 	HAL_Delay(100);
 
+	printf("BNO Calibration\r\n");
+	for(uint8_t i = 0; i < 10; i++){
+		HAL_I2C_Mem_Read(&hi2c1, 0x28 << 1, BNO055_ACCEL_CALIB_STAT_REG, I2C_MEMADD_SIZE_8BIT, &Rxbuff, 1, 100);
+		HAL_Delay(1000);
+	}
 
-
+	printf("Calibration Stats: %x\r\n", Rxbuff);
 
 }
 
@@ -976,7 +981,7 @@ void FieldPlacementUpdate(void){
 	fieldPlacementTemp.upward = gRobotPos.actPos[2];
 	fieldPlacementTemp.plane = gRobotPos.actPos[3];
 
-	for(uint8_t i = 1; i < 100; i++){
+	for(uint8_t i = 1; i < 200; i++){
 		if((gRobotPos.actVel[0] != 0 || gRobotPos.actVel[1] != 0) || gRobotPos.actVel[2] != 0){
 			printf("Error: failed to get field upward\r\n");
 			return ;
@@ -997,7 +1002,7 @@ void FieldPlacementUpdate(void){
 
 	printf("DO NOT MOVE THE ROBOT\r\n");
 	fieldPlacementTemp.slope = gRobotPos.actPos[3];
-	for(uint8_t i = 1; i < 100; i++){
+	for(uint8_t i = 1; i < 200; i++){
 		if((gRobotPos.actVel[0] != 0 || gRobotPos.actVel[1] != 0) || gRobotPos.actVel[2] != 0){
 			printf("Error: failed to get field slope\r\n");
 			return ;
