@@ -326,7 +326,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
 		    a *= -1;
 
 		    gRobotPos.actPos[2] = a;
-		    printf("heading:%f \r\n",gRobotPos.actPos[2]);
+		    //printf("heading:%f \r\n",gRobotPos.actPos[2]);
 
 		    //read gravity vector from BNO055 for detecting slope
 		    ReadGrvVector(&hi2c1, gGrvVector, BNO055_I2C_ADDR1);
@@ -390,6 +390,10 @@ void RobotVelFB(void){
 		else if(gRobotPos.actVel[i]/16 + 127 < 0){
 			fdcan1_TxData[i] = 0;
 			continue;
+		}
+
+		if(is_field_init == FALSE){
+			fdcan1_TxData[3] = 255;
 		}
 		int8_t buffer = gRobotPos.actVel[i]/gain[i] + 127;
 		fdcan1_TxData[i] |= buffer;
