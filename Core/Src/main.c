@@ -319,9 +319,11 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
 			ReadEulerAngle(&hi2c1, euler, BNO055_I2C_ADDR1);
 
 		    //北基準からフィールド上方向基準に変更
-		    double a = euler[0] - gFieldPlacement.upward - PI;
-		    if(a > gFieldPlacement.upward + PI)a -= 2 * PI;
-		    if(a < gFieldPlacement.upward - PI)a += 2 * PI;
+		    double a = euler[0] - gFieldPlacement.upward;
+		    if(a > PI)a -= 2 * PI;
+		    if(a < -PI)a += 2 * PI;
+
+		    a *= -1;
 
 		    gRobotPos.actPos[2] = a;
 		    printf("heading:%f \r\n",gRobotPos.actPos[2]);
