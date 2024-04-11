@@ -163,6 +163,9 @@ void CountDown(char header[], uint8_t time);
 
 void FieldPlacementUpdate(void);
 
+void ReadEulerAngle(I2C_HandleTypeDef *hi2c, double euler[3], uint8_t address);
+void ReadGrvVector(I2C_HandleTypeDef *hi2c, double vector[3], uint8_t address);
+
 //CAN communication functions.
 void CAN_Motordrive(int32_t vel[]);
 
@@ -171,13 +174,13 @@ void ConvertWheel2Motor(wheel *wheels, motor *motors);
 void InverseKinematics(robotPosStatus *robotPos, wheel wheel[], robotPhyParam *robotPhy);
 void ForwardKinematics(robotPosStatus *robotPos, wheel wheel[], robotPhyParam *robotPhy);
 double CalcVectorAngle(double vector1[3], double vector2[3]);
+double CalcRelatedHeadingAngle(double AbsHeading, double bases);
 
 //Feed Back Functions
 void RobotVelFB(void);
 void SlopeStateSend(uint8_t state);
 
 //Sequence Functions
-void Update(void);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -307,44 +310,59 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
 
 		static uint8_t count = 0;
 
-		if(count == 10){
+		if(count == 10 && is_field_init == TRUE){
 			count = 0;
 			uint8_t Rxbuffer[10] = {};
 
 			//read euler angle from BNO
-			float euler[3] = {};
-		    HAL_I2C_Mem_Read(&hi2c1, BNO055_I2C_ADDR1 << 1, 0x1A, I2C_MEMADD_SIZE_8BIT, Rxbuffer, 6, 100);
+			double euler[3] = {};
+			ReadEulerAngle(&hi2c1, euler, BNO055_I2C_ADDR1);
 
-		    for(uint8_t i=0; i<3; i++){
-			    euler[i] = (float)((Rxbuffer[i*2+1] << 8) | Rxbuffer[i*2])/16/180*PI;
-		    }
-		    gRobotPos.actPos[2] = euler[0];
+		    //北基準からフィールド上方向基準に変更
+		    double a = euler[0] - gFieldPlacement.upward - PI;
+		    if(a > gFieldPlacement.upward + PI)a -= 2 * PI;
+		    if(a < gFieldPlacement.upward - PI)a += 2 * PI;
+
+		    gRobotPos.actPos[2] = a;
+		    printf("heading:%f \r\n",gRobotPos.actPos[2]);
 
 		    //read gravity vector from BNO055 for detecting slope
-		    HAL_I2C_Mem_Read(&hi2c1, BNO055_I2C_ADDR1 << 1, BNO055_GRAVITY_DATA_X_LSB_ADDR, I2C_MEMADD_SIZE_8BIT, Rxbuffer, BNO055_GRAVITY_XYZ_DATA_SIZE, 100);
-
-			for(uint8_t i=0; i<3; i++){
-				int16_t b = (Rxbuffer[i*2+1] << 8) | Rxbuffer[i*2];
-				gGrvVector[i] = (float)b / 100;
-			}
+		    ReadGrvVector(&hi2c1, gGrvVector, BNO055_I2C_ADDR1);
 
 			//printf("Grv vector x:%f / y:%f / z:%f\r\n", gGrvVector[0], gGrvVector[1], gGrvVector[2]);
 			double rawAngle = CalcVectorAngle(gFieldPlacement.planeGrvVector, gGrvVector);
 			double angle = low_pass_filter_update(gyroLPFsetting, rawAngle);
 
-			if(is_field_init == TRUE){
-				//printf("angle:%f\r\n", rawAngle);
-				if (rawAngle > gFieldPlacement.slopeAngleDiff * 0.8){
-					is_on_slope = TRUE;
-					//printf("On slope\r\n");
-				}
-				else{
-					is_on_slope = FALSE;
-				}
-				SlopeStateSend(is_on_slope);
+			printf("angle:%f\r\n", rawAngle);
+			if (rawAngle > gFieldPlacement.slopeAngleDiff * 0.8){
+				is_on_slope = TRUE;
+				//printf("On slope\r\n");
 			}
+			else{
+				is_on_slope = FALSE;
+			}
+			SlopeStateSend(is_on_slope);
 		}
 		count++;
+	}
+}
+
+void ReadEulerAngle(I2C_HandleTypeDef *hi2c, double euler[3], uint8_t address){
+	uint8_t Rxbuffer[10];
+	HAL_I2C_Mem_Read(hi2c, address << 1, 0x1A, I2C_MEMADD_SIZE_8BIT, Rxbuffer, 6, 100);
+
+	for(uint8_t i=0; i<3; i++){
+		euler[i] = (double)((Rxbuffer[i*2+1] << 8) | Rxbuffer[i*2])/16/180*PI;
+	}
+}
+
+void ReadGrvVector(I2C_HandleTypeDef *hi2c, double vector[3], uint8_t address){
+	uint8_t Rxbuffer[10];
+	HAL_I2C_Mem_Read(hi2c, BNO055_I2C_ADDR1 << 1, BNO055_GRAVITY_DATA_X_LSB_ADDR, I2C_MEMADD_SIZE_8BIT, Rxbuffer, BNO055_GRAVITY_XYZ_DATA_SIZE, 100);
+
+	for(uint8_t i=0; i<3; i++){
+		int16_t b = (Rxbuffer[i*2+1] << 8) | Rxbuffer[i*2];
+		vector[i] = (double)b / 100;
 	}
 }
 
@@ -435,8 +453,8 @@ int main(void)
 		Error_Handler();
 	  }
   }
-  HAL_TIM_Base_Start_IT(&htim17);
   BNO055_Init();
+  HAL_TIM_Base_Start_IT(&htim17);
 
   FieldPlacementInit();
   FieldPlacementUpdate();
@@ -998,25 +1016,25 @@ void FieldPlacementUpdate(void){
 	printf("Put the robot facing upward of the field\r\n");
 
 	char header[24] = "Calibration starts in";
+	double buff[3] = {};
+
 	CountDown(header, 5);
 	printf("Calibrating\r\n");
 	printf("DO NOT MOVE THE ROBOT\r\n");
-	field_placement fieldPlacementTemp;
+	field_placement fieldPlacementTemp = {0, 0, 0, {}, {}, 0.05};
 
-	fieldPlacementTemp.upward = gRobotPos.actPos[2];
-	memmove(fieldPlacementTemp.planeGrvVector, gGrvVector, 24);
-
-	for(uint8_t i = 1; i < 200; i++){
+	for(uint8_t i = 0; i < 200; i++){
 		if((gRobotPos.actVel[0] != 0 || gRobotPos.actVel[1] != 0) || gRobotPos.actVel[2] != 0){
 			printf("Error: failed to get field upward\r\n");
 			return ;
 		}
-		fieldPlacementTemp.upward = (fieldPlacementTemp.upward * i + gRobotPos.actPos[2]) / (i+1);
-		for(uint8_t j = 0; j<3; j++){
-			fieldPlacementTemp.planeGrvVector[j] = (fieldPlacementTemp.planeGrvVector[j] * i + gGrvVector[j]) / (i+1);
-		}
-
+		ReadEulerAngle(&hi2c1, buff, BNO055_I2C_ADDR1);
+		fieldPlacementTemp.upward = (fieldPlacementTemp.upward * i + buff[0]) / (i+1);
 		HAL_Delay(10);
+		ReadGrvVector(&hi2c1, buff, BNO055_I2C_ADDR1);
+		for(uint8_t j = 0; j<3; j++){
+			fieldPlacementTemp.planeGrvVector[j] = (fieldPlacementTemp.planeGrvVector[j] * i + buff[j]) / (i+1);
+		}
 	}
 
 	printf("Pass: get field upward:%f\r\n", fieldPlacementTemp.upward);
@@ -1029,13 +1047,15 @@ void FieldPlacementUpdate(void){
 
 	printf("DO NOT MOVE THE ROBOT\r\n");
 	fieldPlacementTemp.slope = gRobotPos.actPos[3];
-	for(uint8_t i = 1; i < 200; i++){
+	for(uint8_t i = 0; i < 200; i++){
 		if((gRobotPos.actVel[0] != 0 || gRobotPos.actVel[1] != 0) || gRobotPos.actVel[2] != 0){
 			printf("Error: failed to get field slope\r\n");
 			return ;
 		}
+
+		ReadGrvVector(&hi2c1, buff, BNO055_I2C_ADDR1);
 		for(uint8_t j = 0; j<3; j++){
-			fieldPlacementTemp.slopeGrvVector[j] = (fieldPlacementTemp.slopeGrvVector[j] * i + gGrvVector[j]) / (i+1);
+			fieldPlacementTemp.slopeGrvVector[j] = (fieldPlacementTemp.slopeGrvVector[j] * i + buff[j]) / (i+1);
 		}
 		HAL_Delay(10);
 	}
@@ -1085,6 +1105,11 @@ double CalcVectorAngle(double vector1[3], double vector2[3]){
 	len2 = sqrt(sqlen2);
 
 	return acos(dotp / (len1 * len2));
+}
+
+double CalcRelatedHeadingAngle(double absHeading, double bases){
+	double tempHeading = absHeading - bases;
+
 }
 /* USER CODE END 4 */
 
