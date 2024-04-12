@@ -368,12 +368,12 @@ void ReadGrvVector(I2C_HandleTypeDef *hi2c, double vector[3], uint8_t address){
 	}
 }
 
-void SlopeStateSend(uint8_t state){
+void SlopeStateSend(uint8_t state, double angle){
 	fdcan1_TxHeader.DataLength = FDCAN_DLC_BYTES_2;
 	fdcan1_TxHeader.Identifier = CANID_SLOPE_DETECTION;
 
 	//printf("send:%d\r\n", state);
-	uint8_t fdcan1_TxData[2] = {state, (uint8_t)(gFieldPlacement.slopeAngleDiff * 100)};
+	uint8_t fdcan1_TxData[2] = {state, (uint8_t)(angle * 4000), (uint8_t)(gFieldPlacement.slopeAngleDiff * 4000), };
 	if(HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan1, &fdcan1_TxHeader, fdcan1_TxData) != HAL_OK){
 		Error_Handler();
 	}
