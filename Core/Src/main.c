@@ -343,7 +343,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
 			else{
 				is_on_slope = FALSE;
 			}
-			SlopeStateSend(is_on_slope ,(uint8_t)(rawAngle * 100));
+			SlopeStateSend(is_on_slope , rawAngle);
 		}
 		count++;
 	}
