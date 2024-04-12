@@ -178,7 +178,7 @@ double CalcRelatedHeadingAngle(double AbsHeading, double bases);
 
 //Feed Back Functions
 void RobotVelFB(void);
-void SlopeStateSend(uint8_t state);
+void SlopeStateSend(uint8_t state, double angle);
 
 //Sequence Functions
 /* USER CODE END PFP */
@@ -343,7 +343,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
 			else{
 				is_on_slope = FALSE;
 			}
-			SlopeStateSend((uint8_t)(rawAngle * 100));
+			SlopeStateSend(is_on_slope , rawAngle);
 		}
 		count++;
 	}
@@ -368,12 +368,12 @@ void ReadGrvVector(I2C_HandleTypeDef *hi2c, double vector[3], uint8_t address){
 	}
 }
 
-void SlopeStateSend(uint8_t state){
-	fdcan1_TxHeader.DataLength = FDCAN_DLC_BYTES_2;
+void SlopeStateSend(uint8_t state, double angle){
+	fdcan1_TxHeader.DataLength = FDCAN_DLC_BYTES_3;
 	fdcan1_TxHeader.Identifier = CANID_SLOPE_DETECTION;
 
 	//printf("send:%d\r\n", state);
-	uint8_t fdcan1_TxData[2] = {state, (uint8_t)(gFieldPlacement.slopeAngleDiff * 100)};
+	uint8_t fdcan1_TxData[3] = {state, (uint8_t)(angle * 4000), (uint8_t)(gFieldPlacement.slopeAngleDiff * 4000)};
 	if(HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan1, &fdcan1_TxHeader, fdcan1_TxData) != HAL_OK){
 		Error_Handler();
 	}
