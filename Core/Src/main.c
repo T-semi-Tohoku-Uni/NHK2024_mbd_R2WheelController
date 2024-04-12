@@ -326,7 +326,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
 		    a *= -1;
 
 		    gRobotPos.actPos[2] = a;
-		    //printf("heading:%f \r\n",gRobotPos.actPos[2]);
+//		    printf("heading:%f \r\n",gRobotPos.actPos[2]);
 
 		    //read gravity vector from BNO055 for detecting slope
 		    ReadGrvVector(&hi2c1, gGrvVector, BNO055_I2C_ADDR1);
@@ -335,7 +335,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
 			double rawAngle = CalcVectorAngle(gFieldPlacement.planeGrvVector, gGrvVector);
 			double angle = low_pass_filter_update(gyroLPFsetting, rawAngle);
 
-			printf("angle:%f\r\n", rawAngle);
+			//printf("angle:%f\r\n", rawAngle);
 			if (rawAngle > gFieldPlacement.slopeAngleDiff * 0.8){
 				is_on_slope = TRUE;
 				//printf("On slope\r\n");
@@ -343,7 +343,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
 			else{
 				is_on_slope = FALSE;
 			}
-			SlopeStateSend(is_on_slope);
+			SlopeStateSend((uint8_t)(rawAngle * 100));
 		}
 		count++;
 	}
@@ -369,11 +369,11 @@ void ReadGrvVector(I2C_HandleTypeDef *hi2c, double vector[3], uint8_t address){
 }
 
 void SlopeStateSend(uint8_t state){
-	fdcan1_TxHeader.DataLength = FDCAN_DLC_BYTES_1;
+	fdcan1_TxHeader.DataLength = FDCAN_DLC_BYTES_2;
 	fdcan1_TxHeader.Identifier = CANID_SLOPE_DETECTION;
 
 	//printf("send:%d\r\n", state);
-	uint8_t fdcan1_TxData[1] = {state};
+	uint8_t fdcan1_TxData[2] = {state, (uint8_t)(gFieldPlacement.slopeAngleDiff * 100)};
 	if(HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan1, &fdcan1_TxHeader, fdcan1_TxData) != HAL_OK){
 		Error_Handler();
 	}
