@@ -321,7 +321,6 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
 
 		if(count == 10 && is_field_init == TRUE){
 			count = 0;
-			uint8_t Rxbuffer[10] = {};
 
 			//read euler angle from BNO
 			double euler[3] = {};
@@ -1124,11 +1123,6 @@ double CalcVectorAngle(double vector1[3], double vector2[3]){
 	len2 = sqrt(sqlen2);
 
 	return acos(dotp / (len1 * len2));
-}
-
-double CalcRelatedHeadingAngle(double absHeading, double bases){
-	double tempHeading = absHeading - bases;
-
 }
 /* USER CODE END 4 */
 
