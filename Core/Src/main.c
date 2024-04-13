@@ -399,15 +399,15 @@ void RobotVelFB(void){
 			fdcan1_TxData[i] = 0;
 			continue;
 		}
-
-		if(is_field_init == FALSE){
-			fdcan1_TxData[3] = 255;
-		}
 		int8_t buffer = gRobotPos.actVel[i]/gain[i] + 127;
 		fdcan1_TxData[i] |= buffer;
 	}
 
 	fdcan1_TxData[3] = (uint8_t)(40 * gRobotPos.actPos[2] + 127	);
+	if(is_field_init == FALSE){
+		fdcan1_TxData[3] = 127;
+	}
+
 	fdcan1_TxHeader.DataLength = FDCAN_DLC_BYTES_4;
 	fdcan1_TxHeader.Identifier = CANID_ROBOT_VEL_FB;
 
