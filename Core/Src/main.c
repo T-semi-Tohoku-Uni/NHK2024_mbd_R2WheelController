@@ -68,10 +68,9 @@ FDCAN_HandleTypeDef hfdcan3;
 
 I2C_HandleTypeDef hi2c1;
 
-IWDG_HandleTypeDef hiwdg;
-
 UART_HandleTypeDef hlpuart1;
 
+TIM_HandleTypeDef htim7;
 TIM_HandleTypeDef htim17;
 
 /* USER CODE BEGIN PV */
@@ -134,6 +133,7 @@ typedef struct{
 
 uint8_t is_on_slope = FALSE;
 uint8_t is_field_init = FALSE;
+uint8_t is_can_alive = TRUE;
 
 field_placement gFieldPlacement;
 Low_Pass_Filter_Settings *gyroLPFsetting;
@@ -150,8 +150,8 @@ static void MX_LPUART1_UART_Init(void);
 static void MX_FDCAN3_Init(void);
 static void MX_TIM17_Init(void);
 static void MX_FDCAN1_Init(void);
-static void MX_IWDG_Init(void);
 static void MX_I2C1_Init(void);
+static void MX_TIM7_Init(void);
 /* USER CODE BEGIN PFP */
 void RobotControllerInit(void);
 void MotorControllerInit(void);
@@ -236,17 +236,13 @@ void ForwardKinematics(robotPosStatus *robotPos, wheel wheel[], robotPhyParam *r
 //Call Back
 void HAL_FDCAN_RxFifo0Callback(FDCAN_HandleTypeDef *hfdcan, uint32_t RxFifo0ITs) {
 	if ((RxFifo0ITs & FDCAN_IT_RX_FIFO0_NEW_MESSAGE) != RESET) {
+		is_can_alive = TRUE;
 		//printf("FIFO0 callback\r\n");
 		if(hfdcan == &hfdcan1){
 			if (HAL_FDCAN_GetRxMessage(hfdcan, FDCAN_RX_FIFO0, &fdcan1_RxHeader, fdcan1_RxData) != HAL_OK) {
 				Error_Handler();
 			}
 			if(fdcan1_RxHeader.Identifier == CANID_ROBOT_VEL){
-				if (HAL_IWDG_Refresh(&hiwdg) != HAL_OK)
-				{
-					Error_Handler();
-				}
-
 				float gain[3] = {16, 16, 0.02};
 				for(uint8_t i=0; i<3; i++){
 					gRobotPos.trgVel[i] = (fdcan1_RxData[i] - 127)*gain[i];
@@ -281,6 +277,19 @@ void HAL_FDCAN_RxFifo1Callback(FDCAN_HandleTypeDef *hfdcan, uint32_t RxFifo1ITs)
 }
 
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
+	if(htim == &htim7){
+		if(is_can_alive == FALSE){
+			printf("CAN NOT ALIVE\r\n");
+			gRobotPos.trgVel[0] = 0;
+			gRobotPos.trgVel[1] = 0;
+			gRobotPos.trgVel[2] = 0;
+		}
+
+		if(is_can_alive == TRUE){
+			printf("CAN alive\r\n");
+			is_can_alive = FALSE;
+		}
+	}
 
 	if(htim == &htim17){
 		//printf("Timer callback\r\n");
@@ -399,7 +408,7 @@ void RobotVelFB(void){
 		fdcan1_TxData[i] |= buffer;
 	}
 
-	fdcan1_TxData[3] = (uint8_t)(40 * gRobotPos.actPos[2]);
+	fdcan1_TxData[3] = (uint8_t)(40 * gRobotPos.actPos[2] + 127	);
 	fdcan1_TxHeader.DataLength = FDCAN_DLC_BYTES_4;
 	fdcan1_TxHeader.Identifier = CANID_ROBOT_VEL_FB;
 
@@ -442,10 +451,9 @@ int main(void)
   MX_FDCAN3_Init();
   MX_TIM17_Init();
   MX_FDCAN1_Init();
-  //MX_IWDG_Init();
   MX_I2C1_Init();
+  MX_TIM7_Init();
   /* USER CODE BEGIN 2 */
-  //MX_IWDG_Init();
   RobotControllerInit();
   MotorControllerInit();
   RobotPhyParamInit();
@@ -454,17 +462,14 @@ int main(void)
 	  HAL_Delay(200);
 	  int32_t vel[4] = {};
 	  CAN_Motordrive(vel);
-	  if (HAL_IWDG_Refresh(&hiwdg) != HAL_OK)
-	  {
-		Error_Handler();
-	  }
   }
   BNO055_Init();
   HAL_TIM_Base_Start_IT(&htim17);
 
   FieldPlacementInit();
   FieldPlacementUpdate();
-  //MX_IWDG_Init();
+
+  HAL_TIM_Base_Start_IT(&htim7);
   printf("Initialized\r\n");
 
 
@@ -474,7 +479,7 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-	  /* USER CODE END WHILE */
+    /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
   }
@@ -497,10 +502,9 @@ void SystemClock_Config(void)
   /** Initializes the RCC Oscillators according to the specified parameters
   * in the RCC_OscInitTypeDef structure.
   */
-  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI|RCC_OSCILLATORTYPE_LSI;
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
   RCC_OscInitStruct.HSIState = RCC_HSI_ON;
   RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
-  RCC_OscInitStruct.LSIState = RCC_LSI_ON;
   RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
   RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSI;
   RCC_OscInitStruct.PLL.PLLM = RCC_PLLM_DIV1;
@@ -718,35 +722,6 @@ static void MX_I2C1_Init(void)
 }
 
 /**
-  * @brief IWDG Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_IWDG_Init(void)
-{
-
-  /* USER CODE BEGIN IWDG_Init 0 */
-
-  /* USER CODE END IWDG_Init 0 */
-
-  /* USER CODE BEGIN IWDG_Init 1 */
-
-  /* USER CODE END IWDG_Init 1 */
-  hiwdg.Instance = IWDG;
-  hiwdg.Init.Prescaler = IWDG_PRESCALER_16;
-  hiwdg.Init.Window = 1000;
-  hiwdg.Init.Reload = 1000;
-  if (HAL_IWDG_Init(&hiwdg) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /* USER CODE BEGIN IWDG_Init 2 */
-
-  /* USER CODE END IWDG_Init 2 */
-
-}
-
-/**
   * @brief LPUART1 Initialization Function
   * @param None
   * @retval None
@@ -790,6 +765,44 @@ static void MX_LPUART1_UART_Init(void)
   /* USER CODE BEGIN LPUART1_Init 2 */
 
   /* USER CODE END LPUART1_Init 2 */
+
+}
+
+/**
+  * @brief TIM7 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM7_Init(void)
+{
+
+  /* USER CODE BEGIN TIM7_Init 0 */
+
+  /* USER CODE END TIM7_Init 0 */
+
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+
+  /* USER CODE BEGIN TIM7_Init 1 */
+
+  /* USER CODE END TIM7_Init 1 */
+  htim7.Instance = TIM7;
+  htim7.Init.Prescaler = 7999;
+  htim7.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim7.Init.Period = 9999;
+  htim7.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim7) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim7, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM7_Init 2 */
+
+  /* USER CODE END TIM7_Init 2 */
 
 }
 
