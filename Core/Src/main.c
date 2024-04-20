@@ -244,16 +244,28 @@ void HAL_FDCAN_RxFifo0Callback(FDCAN_HandleTypeDef *hfdcan, uint32_t RxFifo0ITs)
 				Error_Handler();
 			}
 			if(fdcan1_RxHeader.Identifier == CANID_ROBOT_VEL){
-				float gain[3] = {16, 16, 0.02};
-				for(uint8_t i=0; i<3; i++){
-					gRobotPos.trgVel[i] = (fdcan1_RxData[i] - 127)*gain[i];
+				if(fdcan1_RxData[3] == 0){
+					float gain[3] = {16, 16, 0.02};
+					for(uint8_t i=0; i<3; i++){
+						gRobotPos.trgVel[i] = (fdcan1_RxData[i] - 127)*gain[i];
+					}
 				}
 
-				if(fdcan1_RxData[3] == 1){
-					is_field_coordinate = TRUE;
-				}
-				else {
-					is_field_coordinate = FALSE;
+				else if(fdcan1_RxData[3] == 1){
+					float gain[3] = {16, 16, 0.02};
+					double temp[3];
+					for(uint8_t i=0; i<3; i++){
+						temp[i] = (fdcan1_RxData[i] - 127)*gain[i];
+					}
+
+					float t = gRobotPos.actPos[2];
+					double rot_matrix[2][2] = {{cos(-t), -sin(-t)}, {sin(-t), cos(-t)}};
+					for(uint8_t i = 0; i < 2; i++){
+						gRobotPos.trgVel[i] = temp[0] * rot_matrix[i][0] + temp[1] * rot_matrix[i][1];
+					}
+					gRobotPos.trgVel[2] = temp[2];
+
+//					printf("X:%f, Y:%f, Posture:%f\r\n", gRobotPos.trgVel[0], gRobotPos.trgVel[1], gRobotPos.actPos[2]);
 				}
 			}
 		}
@@ -303,7 +315,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
 
 		if(count == 10 && is_field_init == TRUE){
 			count = 0;
-
+			//ジャイロ関係のハンドリング
 			//read euler angle from BNO
 			double euler[3] = {};
 			ReadEulerAngle(&hi2c1, euler, BNO055_I2C_ADDR1);
@@ -316,7 +328,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
 			a *= -1;
 
 			gRobotPos.actPos[2] = a;
-	//		    printf("heading:%f \r\n",gRobotPos.actPos[2]);
+//			printf("heading:%f \r\n",gRobotPos.actPos[2]);
 
 			//read gravity vector from BNO055 for detecting slope
 			ReadGrvVector(&hi2c1, gGrvVector, BNO055_I2C_ADDR1);
@@ -325,7 +337,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
 			double rawAngle = CalcVectorAngle(gFieldPlacement.planeGrvVector, gGrvVector);
 			double angle = low_pass_filter_update(gyroLPFsetting, rawAngle);
 
-			//printf("angle:%f\r\n", rawAngle);
+//			printf("angle:%f\r\n", rawAngle);
 			if (rawAngle > gFieldPlacement.slopeAngleDiff * 0.8){
 				is_on_slope = TRUE;
 				//printf("On slope\r\n");
@@ -337,13 +349,6 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
 		}
 		count++;
 
-		if(is_field_coordinate == TRUE){
-			float t = gRobotPos.actPos[2];
-			float rot_matrix[2][2] = {{cos(-t), -sin(-t)}, {sin(-t), cos(-t)}};
-			for(uint8_t i = 0; i < 2; i++){
-				gRobotPos.trgVel[i] = gRobotPos.trgVel[0] * rot_matrix[i][0] + gRobotPos.trgVel[1] * rot_matrix[i][1];
-			}
-		}
 		//printf("Timer callback\r\n");
 		int32_t output[4];
 
@@ -492,6 +497,7 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
+
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
