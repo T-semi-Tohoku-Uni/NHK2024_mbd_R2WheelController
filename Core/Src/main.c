@@ -200,7 +200,7 @@ void ConvertWheel2Motor(wheel *wheels, motor *motors){
 
 void InverseKinematics(robotPosStatus *robotPos, wheel wheel[], robotPhyParam *robotPhy){
 	//座標変換行�??
-	const float wheelParam = (robotPhy->wheelBaseLen + robotPhy->treadLen) / 2;
+	const float wheelParam = (robotPhy->wheelBaseLen + robotPhy->treadLen) / 4;
 	const float A[4][3] = {
 			{-1,  1, wheelParam},
 			{-1, -1, wheelParam},
@@ -289,6 +289,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
 			printf("CAN alive\r\n");
 			is_can_alive = FALSE;
 		}
+		printf("heading:%f \r\n",gRobotPos.actPos[2]);
 	}
 
 	if(htim == &htim17){
