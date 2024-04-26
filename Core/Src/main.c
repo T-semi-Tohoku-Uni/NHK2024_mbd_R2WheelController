@@ -234,6 +234,11 @@ void ForwardKinematics(robotPosStatus *robotPos, wheel wheel[], robotPhyParam *r
 	}
 }
 
+void RotateVector(double theta,  double *start, double *destnation) {
+  *destnation = start[0] * cos(theta) - start[1] * sin(theta);
+    *(destnation + 1) = start[0] * sin(theta) + start[1] * cos(theta);
+}
+
 //Call Back
 void HAL_FDCAN_RxFifo0Callback(FDCAN_HandleTypeDef *hfdcan, uint32_t RxFifo0ITs) {
 	if ((RxFifo0ITs & FDCAN_IT_RX_FIFO0_NEW_MESSAGE) != RESET) {
@@ -245,6 +250,7 @@ void HAL_FDCAN_RxFifo0Callback(FDCAN_HandleTypeDef *hfdcan, uint32_t RxFifo0ITs)
 			}
 			if(fdcan1_RxHeader.Identifier == CANID_ROBOT_VEL){
 				if(fdcan1_RxData[3] == 0){
+					is_field_coordinate = FALSE;
 					float gain[3] = {16, 16, 0.02};
 					for(uint8_t i=0; i<3; i++){
 						gRobotPos.trgVel[i] = (fdcan1_RxData[i] - 127)*gain[i];
@@ -252,6 +258,7 @@ void HAL_FDCAN_RxFifo0Callback(FDCAN_HandleTypeDef *hfdcan, uint32_t RxFifo0ITs)
 				}
 
 				else if(fdcan1_RxData[3] == 1){
+					is_field_coordinate = TRUE;
 					float gain[3] = {16, 16, 0.02};
 					double temp[3];
 					for(uint8_t i=0; i<3; i++){
@@ -345,7 +352,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
 			else{
 				is_on_slope = FALSE;
 			}
-			SlopeStateSend(is_on_slope , rawAngle);
+//			SlopeStateSend(is_on_slope , rawAngle);
 		}
 		count++;
 
@@ -371,8 +378,8 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
 		}
 
 		//transmit to C610
-		CAN_Motordrive(output);
-		RobotVelFB();
+//		CAN_Motordrive(output);
+//		RobotVelFB();
 	}
 }
 
@@ -487,8 +494,10 @@ int main(void)
   FieldPlacementInit();
   FieldPlacementUpdate();
 
-  HAL_TIM_Base_Start_IT(&htim7);
+//  HAL_TIM_Base_Start_IT(&htim7);
   printf("Initialized\r\n");
+  double trg[2] = {300, 0};
+
 
 
   /* USER CODE END 2 */
@@ -497,7 +506,9 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-
+	  RotateVector(-gRobotPos.actPos[2], trg, gRobotPos.trgVel);
+	  printf("robotX:%f, robotY:%f\r\n", gRobotPos.trgVel[0], gRobotPos.trgVel[1]);
+	  HAL_Delay(100);
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
