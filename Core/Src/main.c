@@ -90,6 +90,7 @@ typedef struct{
 	double actVel[3];
 	double trgVel[3];
 	double outVel[3];
+	double trgVelF[3];
 	PID velPID[3];
 } robotPosStatus;
 
@@ -249,31 +250,23 @@ void HAL_FDCAN_RxFifo0Callback(FDCAN_HandleTypeDef *hfdcan, uint32_t RxFifo0ITs)
 				Error_Handler();
 			}
 			if(fdcan1_RxHeader.Identifier == CANID_ROBOT_VEL){
+				float gain[3] = {16, 16, 0.02};
 				if(fdcan1_RxData[3] == 0){
 					is_field_coordinate = FALSE;
-					float gain[3] = {16, 16, 0.02};
 					for(uint8_t i=0; i<3; i++){
 						gRobotPos.trgVel[i] = (fdcan1_RxData[i] - 127)*gain[i];
+						gRobotPos.trgVelF[i] = gRobotPos.trgVel[i];
 					}
 				}
-
-				else if(fdcan1_RxData[3] == 1){
+				else{
 					is_field_coordinate = TRUE;
-					float gain[3] = {16, 16, 0.02};
-					double temp[3];
-					for(uint8_t i=0; i<3; i++){
-						temp[i] = (fdcan1_RxData[i] - 127)*gain[i];
+					for(uint8_t i = 0; i<3; i++){
+						gRobotPos.trgVelF[i] = (fdcan1_RxData[i] - 127)*gain[i];
 					}
-
-					float t = gRobotPos.actPos[2];
-					double rot_matrix[2][2] = {{cos(-t), -sin(-t)}, {sin(-t), cos(-t)}};
-					for(uint8_t i = 0; i < 2; i++){
-						gRobotPos.trgVel[i] = temp[0] * rot_matrix[i][0] + temp[1] * rot_matrix[i][1];
-					}
-					gRobotPos.trgVel[2] = temp[2];
-
-//					printf("X:%f, Y:%f, Posture:%f\r\n", gRobotPos.trgVel[0], gRobotPos.trgVel[1], gRobotPos.actPos[2]);
 				}
+
+
+
 			}
 		}
 	}
@@ -352,18 +345,23 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
 			else{
 				is_on_slope = FALSE;
 			}
-//			SlopeStateSend(is_on_slope , rawAngle);
+			SlopeStateSend(is_on_slope , rawAngle);
 		}
 		count++;
 
+//		モーター制御
 		//printf("Timer callback\r\n");
 		int32_t output[4];
-
 
 		ConvertWheel2Motor(gRobotPhy.wheels, gMotors);
 		ForwardKinematics(&gRobotPos, gRobotPhy.wheels, &gRobotPhy);
 
+		if(is_field_coordinate == TRUE){
+			RotateVector(-gRobotPos.actPos[2], gRobotPos.trgVelF, gRobotPos.trgVel);
+			gRobotPos.trgVel[2] = gRobotPos.trgVelF[2];
+		}
 		for(uint8_t i=0; i<3; i++){
+
 			gRobotPos.velPID[i].setpoint = gRobotPos.trgVel[i];
 			gRobotPos.outVel[i] = gRobotPos.trgVel[i] + pid_compute(&gRobotPos.velPID[i], gRobotPos.actVel[i]);
 		}
@@ -378,8 +376,8 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
 		}
 
 		//transmit to C610
-//		CAN_Motordrive(output);
-//		RobotVelFB();
+		CAN_Motordrive(output);
+		RobotVelFB();
 	}
 }
 
@@ -494,9 +492,8 @@ int main(void)
   FieldPlacementInit();
   FieldPlacementUpdate();
 
-//  HAL_TIM_Base_Start_IT(&htim7);
+  HAL_TIM_Base_Start_IT(&htim7);
   printf("Initialized\r\n");
-  double trg[2] = {300, 0};
 
 
 
@@ -506,9 +503,6 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-	  RotateVector(-gRobotPos.actPos[2], trg, gRobotPos.trgVel);
-	  printf("robotX:%f, robotY:%f\r\n", gRobotPos.trgVel[0], gRobotPos.trgVel[1]);
-	  HAL_Delay(100);
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
