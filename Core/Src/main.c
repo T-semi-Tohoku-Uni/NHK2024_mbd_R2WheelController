@@ -90,6 +90,7 @@ typedef struct{
 	double actVel[3];
 	double trgVel[3];
 	double outVel[3];
+	double trgVelF[3];
 	PID velPID[3];
 } robotPosStatus;
 
@@ -134,6 +135,7 @@ typedef struct{
 uint8_t is_on_slope = FALSE;
 uint8_t is_field_init = FALSE;
 uint8_t is_can_alive = TRUE;
+uint8_t is_field_coordinate = FALSE;
 
 field_placement gFieldPlacement;
 Low_Pass_Filter_Settings *gyroLPFsetting;
@@ -217,7 +219,7 @@ void InverseKinematics(robotPosStatus *robotPos, wheel wheel[], robotPhyParam *r
 }
 
 void ForwardKinematics(robotPosStatus *robotPos, wheel wheel[], robotPhyParam *robotPhy){
-	const float wheelParam = (robotPhy->wheelBaseLen + robotPhy->treadLen) / 1;
+	const float wheelParam = (robotPhy->wheelBaseLen + robotPhy->treadLen) / 2;
 	const float gain = 0.25;
 	const float A[3][4] = {
 		{-1, -1, 1, 1},
@@ -233,6 +235,11 @@ void ForwardKinematics(robotPosStatus *robotPos, wheel wheel[], robotPhyParam *r
 	}
 }
 
+void RotateVector(double theta,  double *start, double *destnation) {
+  *destnation = start[0] * cos(theta) - start[1] * sin(theta);
+    *(destnation + 1) = start[0] * sin(theta) + start[1] * cos(theta);
+}
+
 //Call Back
 void HAL_FDCAN_RxFifo0Callback(FDCAN_HandleTypeDef *hfdcan, uint32_t RxFifo0ITs) {
 	if ((RxFifo0ITs & FDCAN_IT_RX_FIFO0_NEW_MESSAGE) != RESET) {
@@ -244,12 +251,23 @@ void HAL_FDCAN_RxFifo0Callback(FDCAN_HandleTypeDef *hfdcan, uint32_t RxFifo0ITs)
 			}
 			if(fdcan1_RxHeader.Identifier == CANID_ROBOT_VEL){
 				float gain[3] = {16, 16, 0.02};
-				for(uint8_t i=0; i<3; i++){
-					gRobotPos.trgVel[i] = (fdcan1_RxData[i] - 127)*gain[i];
+				if(fdcan1_RxData[3] == 0){
+					is_field_coordinate = FALSE;
+					for(uint8_t i=0; i<3; i++){
+						gRobotPos.trgVel[i] = (fdcan1_RxData[i] - 127)*gain[i];
+						gRobotPos.trgVelF[i] = gRobotPos.trgVel[i];
+					}
 				}
-			}
+				else{
+					is_field_coordinate = TRUE;
+					for(uint8_t i = 0; i<3; i++){
+						gRobotPos.trgVelF[i] = (fdcan1_RxData[i] - 127)*gain[i];
+					}
+				}
 
-			//printf("RxData: %x\r\n", fdcan1_RxData[0]);
+
+
+			}
 		}
 	}
 }
@@ -289,18 +307,61 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
 			printf("CAN alive\r\n");
 			is_can_alive = FALSE;
 		}
-		printf("heading:%f \r\n",gRobotPos.actPos[2]);
+		printf("Posture:%f\r\n", gRobotPos.actPos[2]);
 	}
 
 	if(htim == &htim17){
+		static uint8_t count = 0;
+
+		if(count == 10 && is_field_init == TRUE){
+			count = 0;
+			//ジャイロ関係のハンドリング
+			//read euler angle from BNO
+			double euler[3] = {};
+			ReadEulerAngle(&hi2c1, euler, BNO055_I2C_ADDR1);
+
+			//北基準からフィールド上方向基準に変更
+			double a = euler[0] - gFieldPlacement.upward;
+			if(a > PI)a -= 2 * PI;
+			if(a < -PI)a += 2 * PI;
+
+			a *= -1;
+
+			gRobotPos.actPos[2] = a;
+//			printf("heading:%f \r\n",gRobotPos.actPos[2]);
+
+			//read gravity vector from BNO055 for detecting slope
+			ReadGrvVector(&hi2c1, gGrvVector, BNO055_I2C_ADDR1);
+
+			//printf("Grv vector x:%f / y:%f / z:%f\r\n", gGrvVector[0], gGrvVector[1], gGrvVector[2]);
+			double rawAngle = CalcVectorAngle(gFieldPlacement.planeGrvVector, gGrvVector);
+			double angle = low_pass_filter_update(gyroLPFsetting, rawAngle);
+
+//			printf("angle:%f\r\n", rawAngle);
+			if (rawAngle > gFieldPlacement.slopeAngleDiff * 0.8){
+				is_on_slope = TRUE;
+				//printf("On slope\r\n");
+			}
+			else{
+				is_on_slope = FALSE;
+			}
+			SlopeStateSend(is_on_slope , rawAngle);
+		}
+		count++;
+
+//		モーター制御
 		//printf("Timer callback\r\n");
 		int32_t output[4];
-
 
 		ConvertWheel2Motor(gRobotPhy.wheels, gMotors);
 		ForwardKinematics(&gRobotPos, gRobotPhy.wheels, &gRobotPhy);
 
+		if(is_field_coordinate == TRUE){
+			RotateVector(-gRobotPos.actPos[2], gRobotPos.trgVelF, gRobotPos.trgVel);
+			gRobotPos.trgVel[2] = gRobotPos.trgVelF[2];
+		}
 		for(uint8_t i=0; i<3; i++){
+
 			gRobotPos.velPID[i].setpoint = gRobotPos.trgVel[i];
 			gRobotPos.outVel[i] = gRobotPos.trgVel[i] + pid_compute(&gRobotPos.velPID[i], gRobotPos.actVel[i]);
 		}
@@ -317,44 +378,6 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
 		//transmit to C610
 		CAN_Motordrive(output);
 		RobotVelFB();
-
-		static uint8_t count = 0;
-
-		if(count == 10 && is_field_init == TRUE){
-			count = 0;
-
-			//read euler angle from BNO
-			double euler[3] = {};
-			ReadEulerAngle(&hi2c1, euler, BNO055_I2C_ADDR1);
-
-		    //北基準からフィールド上方向基準に変更
-		    double a = euler[0] - gFieldPlacement.upward;
-		    if(a > PI)a -= 2 * PI;
-		    if(a < -PI)a += 2 * PI;
-
-		    a *= -1;
-
-		    gRobotPos.actPos[2] = a;
-//		    printf("heading:%f \r\n",gRobotPos.actPos[2]);
-
-		    //read gravity vector from BNO055 for detecting slope
-		    ReadGrvVector(&hi2c1, gGrvVector, BNO055_I2C_ADDR1);
-
-			//printf("Grv vector x:%f / y:%f / z:%f\r\n", gGrvVector[0], gGrvVector[1], gGrvVector[2]);
-			double rawAngle = CalcVectorAngle(gFieldPlacement.planeGrvVector, gGrvVector);
-			double angle = low_pass_filter_update(gyroLPFsetting, rawAngle);
-
-			//printf("angle:%f\r\n", rawAngle);
-			if (rawAngle > gFieldPlacement.slopeAngleDiff * 0.8){
-				is_on_slope = TRUE;
-				//printf("On slope\r\n");
-			}
-			else{
-				is_on_slope = FALSE;
-			}
-			SlopeStateSend(is_on_slope , rawAngle);
-		}
-		count++;
 	}
 }
 
@@ -471,6 +494,7 @@ int main(void)
 
   HAL_TIM_Base_Start_IT(&htim7);
   printf("Initialized\r\n");
+
 
 
   /* USER CODE END 2 */
@@ -1043,10 +1067,10 @@ void FieldPlacementUpdate(void){
 	field_placement fieldPlacementTemp = {0, 0, 0, {}, {}, 0.05};
 
 	for(uint8_t i = 0; i < 200; i++){
-		if((gRobotPos.actVel[0] != 0 || gRobotPos.actVel[1] != 0) || gRobotPos.actVel[2] != 0){
-			printf("Error: failed to get field upward\r\n");
-			return ;
-		}
+//		if((gRobotPos.actVel[0] != 0 || gRobotPos.actVel[1] != 0) || gRobotPos.actVel[2] != 0){
+//			printf("Error: failed to get field upward\r\n");
+//			return ;
+//		}
 		ReadEulerAngle(&hi2c1, buff, BNO055_I2C_ADDR1);
 		fieldPlacementTemp.upward = (fieldPlacementTemp.upward * i + buff[0]) / (i+1);
 		HAL_Delay(10);
@@ -1067,10 +1091,10 @@ void FieldPlacementUpdate(void){
 	printf("DO NOT MOVE THE ROBOT\r\n");
 	fieldPlacementTemp.slope = gRobotPos.actPos[3];
 	for(uint8_t i = 0; i < 200; i++){
-		if((gRobotPos.actVel[0] != 0 || gRobotPos.actVel[1] != 0) || gRobotPos.actVel[2] != 0){
-			printf("Error: failed to get field slope\r\n");
-			return ;
-		}
+//		if((gRobotPos.actVel[0] != 0 || gRobotPos.actVel[1] != 0) || gRobotPos.actVel[2] != 0){
+//			printf("Error: failed to get field slope\r\n");
+//			return ;
+//		}
 
 		ReadGrvVector(&hi2c1, buff, BNO055_I2C_ADDR1);
 		for(uint8_t j = 0; j<3; j++){
