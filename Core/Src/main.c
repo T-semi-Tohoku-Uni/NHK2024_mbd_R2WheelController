@@ -60,6 +60,8 @@
 
 #define TRUE 1
 #define FALSE 0
+
+#define SLOPEANGLE 0.085
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
@@ -337,10 +339,10 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
 			double rawAngle = CalcVectorAngle(gFieldPlacement.planeGrvVector, gGrvVector);
 			double angle = low_pass_filter_update(gyroLPFsetting, rawAngle);
 
-//			printf("angle:%f\r\n", rawAngle);
+			printf("angle:%f\r\n", rawAngle);
 			if (rawAngle > gFieldPlacement.slopeAngleDiff * 0.8){
 				is_on_slope = TRUE;
-				//printf("On slope\r\n");
+				printf("On slope\r\n");
 			}
 			else{
 				is_on_slope = FALSE;
@@ -1061,7 +1063,7 @@ void FieldPlacementUpdate(void){
 	char header[24] = "Calibration starts in";
 	double buff[3] = {};
 
-	CountDown(header, 5);
+	CountDown(header, 2);
 	printf("Calibrating\r\n");
 	printf("DO NOT MOVE THE ROBOT\r\n");
 	field_placement fieldPlacementTemp = {0, 0, 0, {}, {}, 0.05};
@@ -1081,7 +1083,7 @@ void FieldPlacementUpdate(void){
 	}
 
 	printf("Pass: get field upward:%f\r\n", fieldPlacementTemp.upward);
-	printf("Pass: get plane grv vector: X:%f / Y:%f / Z:%f\r\n", fieldPlacementTemp.planeGrvVector[0], fieldPlacementTemp.planeGrvVector[1], fieldPlacementTemp.planeGrvVector[2]);
+/*	printf("Pass: get plane grv vector: X:%f / Y:%f / Z:%f\r\n", fieldPlacementTemp.planeGrvVector[0], fieldPlacementTemp.planeGrvVector[1], fieldPlacementTemp.planeGrvVector[2]);
 
 	printf("Put the robot on the slope\r\n");
 	HAL_Delay(1000);
@@ -1104,14 +1106,14 @@ void FieldPlacementUpdate(void){
 	}
 
 	printf("Pass: get slope grv vector: X:%f / Y:%f / Z:%f\r\n", fieldPlacementTemp.slopeGrvVector[0], fieldPlacementTemp.slopeGrvVector[1], fieldPlacementTemp.slopeGrvVector[2]);
-
+*/
 	gFieldPlacement.plane = fieldPlacementTemp.plane;
-	gFieldPlacement.slope = fieldPlacementTemp.slope;
+//	gFieldPlacement.slope = fieldPlacementTemp.slope;
 	gFieldPlacement.upward = fieldPlacementTemp.upward;
 	memmove(gFieldPlacement.planeGrvVector, fieldPlacementTemp.planeGrvVector, 24);
-	memmove(gFieldPlacement.slopeGrvVector, fieldPlacementTemp.slopeGrvVector, 24);
+//	memmove(gFieldPlacement.slopeGrvVector, fieldPlacementTemp.slopeGrvVector, 24);
 
-	gFieldPlacement.slopeAngleDiff = CalcVectorAngle(gFieldPlacement.planeGrvVector, gFieldPlacement.slopeGrvVector);
+	gFieldPlacement.slopeAngleDiff = SLOPEANGLE;
 
 	printf("Field data updated\r\n");
 	printf("---------RESULT----------\n upward: %6.4f / slope angle:%6.4f\r\n", gFieldPlacement.upward, gFieldPlacement.slopeAngleDiff);
