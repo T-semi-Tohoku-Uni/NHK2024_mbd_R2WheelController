@@ -145,6 +145,8 @@ robotPosStatus gRobotPos;
 motor gMotors[4];
 robotPhyParam gRobotPhy;
 double gGrvVector[3] = {};
+
+const uint8_t bno_calib_data[22] = {0, 33, 0, 8, 231, 255, 1, 32, 1, 0, 0, 0, 0, 0, 0, 0, 20, 218, 0, 8, 16, 218};
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -309,7 +311,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
 			printf("CAN alive\r\n");
 			is_can_alive = FALSE;
 		}
-		printf("Posture:%f\r\n", gRobotPos.actPos[2]);
+//		printf("Posture:%f\r\n", gRobotPos.actPos[2]);
 	}
 
 	if(htim == &htim17){
@@ -330,7 +332,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
 			a *= -1;
 
 			gRobotPos.actPos[2] = a;
-//			printf("heading:%f \r\n",gRobotPos.actPos[2]);
+			printf("heading:%f \r\n",gRobotPos.actPos[2]);
 
 			//read gravity vector from BNO055 for detecting slope
 			ReadGrvVector(&hi2c1, gGrvVector, BNO055_I2C_ADDR1);
@@ -339,10 +341,10 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
 			double rawAngle = CalcVectorAngle(gFieldPlacement.planeGrvVector, gGrvVector);
 			double angle = low_pass_filter_update(gyroLPFsetting, rawAngle);
 
-			printf("angle:%f\r\n", rawAngle);
+//			printf("angle:%f\r\n", rawAngle);
 			if (rawAngle > gFieldPlacement.slopeAngleDiff * 0.8){
 				is_on_slope = TRUE;
-				printf("On slope\r\n");
+//				printf("On slope\r\n");
 			}
 			else{
 				is_on_slope = FALSE;
@@ -505,6 +507,16 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
+	  uint8_t Rxbuff;
+	  HAL_I2C_Mem_Read(&hi2c1, 0x28 << 1, BNO055_CALIB_STAT_ADDR, I2C_MEMADD_SIZE_8BIT, &Rxbuff, 1, 100);
+	  printf("Calibration status:%x\r\n", Rxbuff);
+
+	  uint8_t rx_buffer[23];
+	  HAL_I2C_Mem_Read(&hi2c1, 0x28 << 1, BNO055_ACCEL_OFFSET_X_LSB_ADDR, I2C_MEMADD_SIZE_8BIT, rx_buffer, 1, 100);
+	  for(uint8_t i=0; i<22; i++){
+//		  printf("address %d: %d\r\n", i, rx_buffer[i]);
+	  }
+	  HAL_Delay(1000);
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
@@ -970,14 +982,28 @@ void BNO055_Init(void){
 	Txbuff = 0x00;
 	HAL_I2C_Mem_Write(&hi2c1, 0x28 << 1, 0x3E, I2C_MEMADD_SIZE_8BIT, &Txbuff, 1, 100); //power mode
 
-	Txbuff = 0b00010010;
-	//HAL_I2C_Mem_Write(&hi2c1, 0x28 << 1, BNO055_AXIS_MAP_CONFIG_ADDR, I2C_MEMADD_SIZE_8BIT, &Txbuff, 1, 100);
+	HAL_I2C_Mem_Read(&hi2c1, 0x28 << 1, 0x3D, I2C_MEMADD_SIZE_8BIT, &Rxbuff, 1, 100);
+	if(Rxbuff != 0){
+		printf("Not configuration mode\r\n");
+		Txbuff = 0;
+		HAL_I2C_Mem_Write(&hi2c1, 0x28 << 1, 0x3D, I2C_MEMADD_SIZE_8BIT, &Txbuff, 1, 100);//using Nine Degree of Freedom mode
+		printf("Set configuration mode\r\n");
+		HAL_Delay(20);
+	}
+
+	HAL_I2C_Mem_Write(&hi2c1, 0x28 << 1, BNO055_ACCEL_OFFSET_X_LSB_ADDR, I2C_MEMADD_SIZE_8BIT, bno_calib_data, 22, 100);
+
 
 	Txbuff = 0x0C;
 	HAL_I2C_Mem_Write(&hi2c1, 0x28 << 1, 0x3D, I2C_MEMADD_SIZE_8BIT, &Txbuff, 1, 100);//using Nine Degree of Freedom mode
 
+	HAL_Delay(20);
 
+	Txbuff = 0b010010;
+	HAL_I2C_Mem_Write(&hi2c1, 0x28 << 1, BNO055_AXIS_MAP_CONFIG_ADDR, I2C_MEMADD_SIZE_8BIT, &Txbuff, 1, 100);
 
+	HAL_I2C_Mem_Read(&hi2c1, 0x28 << 1, 0x39, I2C_MEMADD_SIZE_8BIT, &Rxbuff, 1, 100);
+	printf("System Error:%d\r\n", Rxbuff);
 
 	HAL_I2C_Mem_Read(&hi2c1, 0x28 << 1, 0x3A, I2C_MEMADD_SIZE_8BIT, &Rxbuff, 1, 100);
 	printf("Error:%d\r\n", Rxbuff);
@@ -1063,7 +1089,7 @@ void FieldPlacementUpdate(void){
 	char header[24] = "Calibration starts in";
 	double buff[3] = {};
 
-	CountDown(header, 2);
+//	CountDown(header, 2);
 	printf("Calibrating\r\n");
 	printf("DO NOT MOVE THE ROBOT\r\n");
 	field_placement fieldPlacementTemp = {0, 0, 0, {}, {}, 0.05};
