@@ -23,6 +23,7 @@
 /* USER CODE BEGIN Includes */
 #include <stdio.h>
 #include <math.h>
+#include <quaternion.h>
 #include <string.h>
 
 #include "DJI_CANIDList.h"
@@ -40,6 +41,7 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
+#define GET_CALIB_DATA
 
 /* USER CODE END PD */
 
@@ -146,7 +148,7 @@ motor gMotors[4];
 robotPhyParam gRobotPhy;
 double gGrvVector[3] = {};
 
-const uint8_t bno_calib_data[22] = {0, 33, 0, 8, 231, 255, 1, 32, 1, 0, 0, 0, 0, 0, 0, 0, 20, 218, 0, 8, 16, 218};
+const uint8_t bno_calib_data[22] = {0, 63, 245, 109, 104, 193, 146, 149, 200, 213, 245, 218, 0, 0, 0, 0, 220, 224, 0, 8, 216, 224};
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -171,7 +173,7 @@ void FieldPlacementUpdate(void);
 
 void ReadEulerAngle(I2C_HandleTypeDef *hi2c, double euler[3], uint8_t address);
 void ReadGrvVector(I2C_HandleTypeDef *hi2c, double vector[3], uint8_t address);
-
+void ReadQuarternion(I2C_HandleTypeDef *hi2c, quaternion *q);
 //CAN communication functions.
 void CAN_Motordrive(int32_t vel[]);
 
@@ -294,6 +296,7 @@ void HAL_FDCAN_RxFifo1Callback(FDCAN_HandleTypeDef *hfdcan, uint32_t RxFifo1ITs)
 				intbuff = fdcan3_RxData[4]<<8 | fdcan3_RxData[5];
 				gMotors[motorID].actCurrent = (double)intbuff;
 			}
+//			printf("motor %d: %f\r\n", motorID, gMotors[motorID].actVel);
 		}
 	}
 }
@@ -321,18 +324,20 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
 			count = 0;
 			//ジャイロ関係のハンドリング
 			//read euler angle from BNO
-			double euler[3] = {};
-			ReadEulerAngle(&hi2c1, euler, BNO055_I2C_ADDR1);
-
+//			double euler[3] = {};
+//			ReadEulerAngle(&hi2c1, euler, BNO055_I2C_ADDR1);
+			quaternion q;
+			ReadQuarternion(&hi2c1, &q);
+			double heading = quaternion_to_heading(q) - gFieldPlacement.upward;
 			//北基準からフィールド上方向基準に変更
-			double a = euler[0] - gFieldPlacement.upward;
-			if(a > PI)a -= 2 * PI;
-			if(a < -PI)a += 2 * PI;
+//			double a = euler[0] - gFieldPlacement.upward;
+			if(heading > PI)heading -= 2 * PI;
+			if(heading < -PI)heading += 2 * PI;
 
-			a *= -1;
+//			heading *= -1;
 
-			gRobotPos.actPos[2] = a;
-			printf("heading:%f \r\n",gRobotPos.actPos[2]);
+			gRobotPos.actPos[2] = heading;
+//			printf("heading:%f, upward:%f \r\n",gRobotPos.actPos[2], gFieldPlacement.upward);
 
 			//read gravity vector from BNO055 for detecting slope
 			ReadGrvVector(&hi2c1, gGrvVector, BNO055_I2C_ADDR1);
@@ -377,6 +382,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
 		for(uint8_t i=0; i<4; i++){
 			gMotors[i].velPID.setpoint = gMotors[i].trgVel;
 			output[i] = pid_compute(&gMotors[i].velPID, gMotors[i].actVel);
+			if(is_can_alive == FALSE)output[i] = 0;
 		}
 
 		//transmit to C610
@@ -387,7 +393,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
 
 void ReadEulerAngle(I2C_HandleTypeDef *hi2c, double euler[3], uint8_t address){
 	uint8_t Rxbuffer[10];
-	HAL_I2C_Mem_Read(hi2c, address << 1, 0x1A, I2C_MEMADD_SIZE_8BIT, Rxbuffer, 6, 100);
+	HAL_I2C_Mem_Read(hi2c, address << 1, BNO055_EULER_H_LSB_ADDR, I2C_MEMADD_SIZE_8BIT, Rxbuffer, 6, 100);
 
 	for(uint8_t i=0; i<3; i++){
 		euler[i] = (double)((Rxbuffer[i*2+1] << 8) | Rxbuffer[i*2])/16/180*PI;
@@ -402,6 +408,16 @@ void ReadGrvVector(I2C_HandleTypeDef *hi2c, double vector[3], uint8_t address){
 		int16_t b = (Rxbuffer[i*2+1] << 8) | Rxbuffer[i*2];
 		vector[i] = (double)b / 100;
 	}
+}
+
+void ReadQuarternion(I2C_HandleTypeDef *hi2c, quaternion *q){
+	uint8_t Rxbuffer[8] = {};
+	HAL_I2C_Mem_Read(hi2c, BNO055_I2C_ADDR1 << 1, BNO055_QUATERNION_DATA_W_LSB_ADDR, I2C_MEMADD_SIZE_8BIT, Rxbuffer, BNO055_QUATERNION_WXYZ_DATA_SIZE, 100);
+
+	q->w = (double)((int16_t)(Rxbuffer[0] | (Rxbuffer[1] << 8)) / (double)pow(2, 14));
+	q->x = (double)((int16_t)(Rxbuffer[2] | (Rxbuffer[3] << 8)) / (double)pow(2, 14));
+	q->y = (double)((int16_t)(Rxbuffer[4] | (Rxbuffer[5] << 8)) / (double)pow(2, 14));
+	q->z = (double)((int16_t)(Rxbuffer[6] | (Rxbuffer[7] << 8)) / (double)pow(2, 14));
 }
 
 void SlopeStateSend(uint8_t state, double angle){
@@ -511,11 +527,32 @@ int main(void)
 	  HAL_I2C_Mem_Read(&hi2c1, 0x28 << 1, BNO055_CALIB_STAT_ADDR, I2C_MEMADD_SIZE_8BIT, &Rxbuff, 1, 100);
 	  printf("Calibration status:%x\r\n", Rxbuff);
 
+//	  quaternion q0;
+//	  q0.w = 0.701355;
+//	  q0.x = -0.677979;
+//	  q0.y = 0.148743;
+//	  q0.z = -0.161987;
+//
+//	  quaternion q;
+//	  ReadQuarternion(&hi2c1, &q);
+//	  printf("q.w: %f\r\n", q.w);
+//	  printf("q.x: %f\r\n", q.x);
+//	  printf("q.y: %f\r\n", q.y);
+//	  printf("q.z: %f\r\n", q.z);
+//
+//	  double heading = quaternion_to_heading(q);
+//	  printf("heading: %f\r\n", heading);
+
+//	  quaternion q_r = quaternion_multiply(q, quaternion_inverse(q0));
+
+
+#ifdef GET_CALIB_DATA
 	  uint8_t rx_buffer[23];
 	  HAL_I2C_Mem_Read(&hi2c1, 0x28 << 1, BNO055_ACCEL_OFFSET_X_LSB_ADDR, I2C_MEMADD_SIZE_8BIT, rx_buffer, 1, 100);
 	  for(uint8_t i=0; i<22; i++){
-//		  printf("address %d: %d\r\n", i, rx_buffer[i]);
+		  printf("address %d: %d\r\n", i, rx_buffer[i]);
 	  }
+#endif
 	  HAL_Delay(1000);
     /* USER CODE END WHILE */
 
@@ -991,7 +1028,14 @@ void BNO055_Init(void){
 		HAL_Delay(20);
 	}
 
-	HAL_I2C_Mem_Write(&hi2c1, 0x28 << 1, BNO055_ACCEL_OFFSET_X_LSB_ADDR, I2C_MEMADD_SIZE_8BIT, bno_calib_data, 22, 100);
+//	HAL_I2C_Mem_Write(&hi2c1, 0x28 << 1, BNO055_ACCEL_OFFSET_X_LSB_ADDR, I2C_MEMADD_SIZE_8BIT, bno_calib_data, 22, 100);
+
+	//	axis remap
+	Txbuff = 0b001001;
+	HAL_I2C_Mem_Write(&hi2c1, 0x28 << 1, BNO055_AXIS_MAP_CONFIG_ADDR, I2C_MEMADD_SIZE_8BIT, &Txbuff, 1, 100);
+
+//	Txbuff = 0b00000110;
+//	HAL_I2C_Mem_Write(&hi2c1, 0x28 << 1, BNO055_AXIS_MAP_SIGN_ADDR, I2C_MEMADD_SIZE_8BIT, &Txbuff, 1, 100);
 
 
 	Txbuff = 0x0C;
@@ -999,8 +1043,7 @@ void BNO055_Init(void){
 
 	HAL_Delay(20);
 
-	Txbuff = 0b010010;
-	HAL_I2C_Mem_Write(&hi2c1, 0x28 << 1, BNO055_AXIS_MAP_CONFIG_ADDR, I2C_MEMADD_SIZE_8BIT, &Txbuff, 1, 100);
+
 
 	HAL_I2C_Mem_Read(&hi2c1, 0x28 << 1, 0x39, I2C_MEMADD_SIZE_8BIT, &Rxbuff, 1, 100);
 	printf("System Error:%d\r\n", Rxbuff);
@@ -1099,8 +1142,11 @@ void FieldPlacementUpdate(void){
 //			printf("Error: failed to get field upward\r\n");
 //			return ;
 //		}
-		ReadEulerAngle(&hi2c1, buff, BNO055_I2C_ADDR1);
-		fieldPlacementTemp.upward = (fieldPlacementTemp.upward * i + buff[0]) / (i+1);
+//		ReadEulerAngle(&hi2c1, buff, BNO055_I2C_ADDR1);
+		quaternion q;
+		ReadQuarternion(&hi2c1, &q);
+		double heading = quaternion_to_heading(q);
+		fieldPlacementTemp.upward = (fieldPlacementTemp.upward * i + heading) / (i+1);
 		HAL_Delay(10);
 		ReadGrvVector(&hi2c1, buff, BNO055_I2C_ADDR1);
 		for(uint8_t j = 0; j<3; j++){
