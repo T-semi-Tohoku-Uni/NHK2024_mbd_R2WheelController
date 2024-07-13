@@ -23,10 +23,13 @@
 /* USER CODE BEGIN Includes */
 #include <stdio.h>
 #include <math.h>
+#include <quaternion.h>
+#include <string.h>
 
 #include "DJI_CANIDList.h"
 #include "R2CANIDList.h"
 
+#include "bno055.h"
 #include "pid.h"
 #include "filter.h"
 /* USER CODE END Includes */
@@ -38,6 +41,7 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
+#define GET_CALIB_DATA
 
 /* USER CODE END PD */
 
@@ -55,16 +59,22 @@
 
 #define CW -1
 #define CCW 1
+
+#define TRUE 1
+#define FALSE 0
+
+#define SLOPEANGLE 0.085
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
 FDCAN_HandleTypeDef hfdcan1;
 FDCAN_HandleTypeDef hfdcan3;
 
-IWDG_HandleTypeDef hiwdg;
+I2C_HandleTypeDef hi2c1;
 
 UART_HandleTypeDef hlpuart1;
 
+TIM_HandleTypeDef htim7;
 TIM_HandleTypeDef htim17;
 
 /* USER CODE BEGIN PV */
@@ -84,6 +94,7 @@ typedef struct{
 	double actVel[3];
 	double trgVel[3];
 	double outVel[3];
+	double trgVelF[3];
 	PID velPID[3];
 } robotPosStatus;
 
@@ -116,11 +127,28 @@ typedef struct{
 	wheel wheels[4];
 }robotPhyParam;
 
+typedef struct{
+	double upward;
+	double plane;
+	double slope;
+	double planeGrvVector[3];
+	double slopeGrvVector[3];
+	double slopeAngleDiff;
+}field_placement;
 
-NHK2024_Low_Pass_Filter_Settings* gLPFsettings;
+uint8_t is_on_slope = FALSE;
+uint8_t is_field_init = FALSE;
+uint8_t is_can_alive = TRUE;
+uint8_t is_field_coordinate = FALSE;
+
+field_placement gFieldPlacement;
+Low_Pass_Filter_Settings *gyroLPFsetting;
 robotPosStatus gRobotPos;
 motor gMotors[4];
 robotPhyParam gRobotPhy;
+double gGrvVector[3] = {};
+
+const uint8_t bno_calib_data[22] = {0, 63, 245, 109, 104, 193, 146, 149, 200, 213, 245, 218, 0, 0, 0, 0, 220, 224, 0, 8, 216, 224};
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -130,13 +158,22 @@ static void MX_LPUART1_UART_Init(void);
 static void MX_FDCAN3_Init(void);
 static void MX_TIM17_Init(void);
 static void MX_FDCAN1_Init(void);
-static void MX_IWDG_Init(void);
+static void MX_I2C1_Init(void);
+static void MX_TIM7_Init(void);
 /* USER CODE BEGIN PFP */
 void RobotControllerInit(void);
 void MotorControllerInit(void);
 void RobotPosInit(void);
 void RobotPhyParamInit(void);
+void BNO055_Init(void);
+void FieldPlacementInit(void);
+void CountDown(char header[], uint8_t time);
 
+void FieldPlacementUpdate(void);
+
+void ReadEulerAngle(I2C_HandleTypeDef *hi2c, double euler[3], uint8_t address);
+void ReadGrvVector(I2C_HandleTypeDef *hi2c, double vector[3], uint8_t address);
+void ReadQuarternion(I2C_HandleTypeDef *hi2c, quaternion *q);
 //CAN communication functions.
 void CAN_Motordrive(int32_t vel[]);
 
@@ -144,11 +181,14 @@ void CAN_Motordrive(int32_t vel[]);
 void ConvertWheel2Motor(wheel *wheels, motor *motors);
 void InverseKinematics(robotPosStatus *robotPos, wheel wheel[], robotPhyParam *robotPhy);
 void ForwardKinematics(robotPosStatus *robotPos, wheel wheel[], robotPhyParam *robotPhy);
+double CalcVectorAngle(double vector1[3], double vector2[3]);
+double CalcRelatedHeadingAngle(double AbsHeading, double bases);
 
 //Feed Back Functions
 void RobotVelFB(void);
+void SlopeStateSend(uint8_t state, double angle);
+
 //Sequence Functions
-void Update(void);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -168,7 +208,7 @@ void ConvertWheel2Motor(wheel *wheels, motor *motors){
 
 void InverseKinematics(robotPosStatus *robotPos, wheel wheel[], robotPhyParam *robotPhy){
 	//座標変換行�??
-	const float wheelParam = (robotPhy->wheelBaseLen + robotPhy->treadLen) / 2;
+	const float wheelParam = (robotPhy->wheelBaseLen + robotPhy->treadLen) / 4;
 	const float A[4][3] = {
 			{-1,  1, wheelParam},
 			{-1, -1, wheelParam},
@@ -185,7 +225,7 @@ void InverseKinematics(robotPosStatus *robotPos, wheel wheel[], robotPhyParam *r
 }
 
 void ForwardKinematics(robotPosStatus *robotPos, wheel wheel[], robotPhyParam *robotPhy){
-	const float wheelParam = (robotPhy->wheelBaseLen + robotPhy->treadLen) / 1;
+	const float wheelParam = (robotPhy->wheelBaseLen + robotPhy->treadLen) / 2;
 	const float gain = 0.25;
 	const float A[3][4] = {
 		{-1, -1, 1, 1},
@@ -194,34 +234,46 @@ void ForwardKinematics(robotPosStatus *robotPos, wheel wheel[], robotPhyParam *r
 	};
 
 	for(uint8_t i=0; i<3; i++){
-	robotPos->actVel[i] = 0;
+		robotPos->actVel[i] = 0;
 		for(uint8_t j=0; j<4; j++){
 			robotPos->actVel[i] += gain * A[i][j] * wheel[j].actVel;
 		}
 	}
 }
 
+void RotateVector(double theta,  double *start, double *destnation) {
+  *destnation = start[0] * cos(theta) - start[1] * sin(theta);
+    *(destnation + 1) = start[0] * sin(theta) + start[1] * cos(theta);
+}
+
 //Call Back
 void HAL_FDCAN_RxFifo0Callback(FDCAN_HandleTypeDef *hfdcan, uint32_t RxFifo0ITs) {
 	if ((RxFifo0ITs & FDCAN_IT_RX_FIFO0_NEW_MESSAGE) != RESET) {
+		is_can_alive = TRUE;
 		//printf("FIFO0 callback\r\n");
 		if(hfdcan == &hfdcan1){
 			if (HAL_FDCAN_GetRxMessage(hfdcan, FDCAN_RX_FIFO0, &fdcan1_RxHeader, fdcan1_RxData) != HAL_OK) {
 				Error_Handler();
 			}
 			if(fdcan1_RxHeader.Identifier == CANID_ROBOT_VEL){
-				if (HAL_IWDG_Refresh(&hiwdg) != HAL_OK)
-				{
-					Error_Handler();
-				}
-
 				float gain[3] = {16, 16, 0.02};
-				for(uint8_t i=0; i<3; i++){
-					gRobotPos.trgVel[i] = (fdcan1_RxData[i] - 127)*gain[i];
+				if(fdcan1_RxData[3] == 0){
+					is_field_coordinate = FALSE;
+					for(uint8_t i=0; i<3; i++){
+						gRobotPos.trgVel[i] = (fdcan1_RxData[i] - 127)*gain[i];
+						gRobotPos.trgVelF[i] = gRobotPos.trgVel[i];
+					}
 				}
-			}
+				else{
+					is_field_coordinate = TRUE;
+					for(uint8_t i = 0; i<3; i++){
+						gRobotPos.trgVelF[i] = (fdcan1_RxData[i] - 127)*gain[i];
+					}
+				}
 
-			//printf("RxData: %x\r\n", fdcan1_RxData[0]);
+
+
+			}
 		}
 	}
 }
@@ -244,21 +296,81 @@ void HAL_FDCAN_RxFifo1Callback(FDCAN_HandleTypeDef *hfdcan, uint32_t RxFifo1ITs)
 				intbuff = fdcan3_RxData[4]<<8 | fdcan3_RxData[5];
 				gMotors[motorID].actCurrent = (double)intbuff;
 			}
+//			printf("motor %d: %f\r\n", motorID, gMotors[motorID].actVel);
 		}
 	}
 }
 
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
+	if(htim == &htim7){
+		if(is_can_alive == FALSE){
+			printf("CAN NOT ALIVE\r\n");
+			gRobotPos.trgVel[0] = 0;
+			gRobotPos.trgVel[1] = 0;
+			gRobotPos.trgVel[2] = 0;
+		}
+
+		if(is_can_alive == TRUE){
+			printf("CAN alive\r\n");
+			is_can_alive = FALSE;
+		}
+//		printf("Posture:%f\r\n", gRobotPos.actPos[2]);
+	}
 
 	if(htim == &htim17){
+		static uint8_t count = 0;
+
+		if(count == 10 && is_field_init == TRUE){
+			count = 0;
+			//ジャイロ関係のハンドリング
+			//read euler angle from BNO
+//			double euler[3] = {};
+//			ReadEulerAngle(&hi2c1, euler, BNO055_I2C_ADDR1);
+			quaternion q;
+			ReadQuarternion(&hi2c1, &q);
+			double heading = quaternion_to_heading(q) - gFieldPlacement.upward;
+			//北基準からフィールド上方向基準に変更
+//			double a = euler[0] - gFieldPlacement.upward;
+			if(heading > PI)heading -= 2 * PI;
+			if(heading < -PI)heading += 2 * PI;
+
+//			heading *= -1;
+
+			gRobotPos.actPos[2] = heading;
+//			printf("heading:%f, upward:%f \r\n",gRobotPos.actPos[2], gFieldPlacement.upward);
+
+			//read gravity vector from BNO055 for detecting slope
+			ReadGrvVector(&hi2c1, gGrvVector, BNO055_I2C_ADDR1);
+
+			//printf("Grv vector x:%f / y:%f / z:%f\r\n", gGrvVector[0], gGrvVector[1], gGrvVector[2]);
+			double rawAngle = CalcVectorAngle(gFieldPlacement.planeGrvVector, gGrvVector);
+			double angle = low_pass_filter_update(gyroLPFsetting, rawAngle);
+
+//			printf("angle:%f\r\n", rawAngle);
+			if (rawAngle > gFieldPlacement.slopeAngleDiff * 0.8){
+				is_on_slope = TRUE;
+//				printf("On slope\r\n");
+			}
+			else{
+				is_on_slope = FALSE;
+			}
+			SlopeStateSend(is_on_slope , rawAngle);
+		}
+		count++;
+
+//		モーター制御
 		//printf("Timer callback\r\n");
 		int32_t output[4];
-
 
 		ConvertWheel2Motor(gRobotPhy.wheels, gMotors);
 		ForwardKinematics(&gRobotPos, gRobotPhy.wheels, &gRobotPhy);
 
+		if(is_field_coordinate == TRUE){
+			RotateVector(-gRobotPos.actPos[2], gRobotPos.trgVelF, gRobotPos.trgVel);
+			gRobotPos.trgVel[2] = gRobotPos.trgVelF[2];
+		}
 		for(uint8_t i=0; i<3; i++){
+
 			gRobotPos.velPID[i].setpoint = gRobotPos.trgVel[i];
 			gRobotPos.outVel[i] = gRobotPos.trgVel[i] + pid_compute(&gRobotPos.velPID[i], gRobotPos.actVel[i]);
 		}
@@ -270,6 +382,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
 		for(uint8_t i=0; i<4; i++){
 			gMotors[i].velPID.setpoint = gMotors[i].trgVel;
 			output[i] = pid_compute(&gMotors[i].velPID, gMotors[i].actVel);
+			if(is_can_alive == FALSE)output[i] = 0;
 		}
 
 		//transmit to C610
@@ -278,8 +391,48 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
 	}
 }
 
+void ReadEulerAngle(I2C_HandleTypeDef *hi2c, double euler[3], uint8_t address){
+	uint8_t Rxbuffer[10];
+	HAL_I2C_Mem_Read(hi2c, address << 1, BNO055_EULER_H_LSB_ADDR, I2C_MEMADD_SIZE_8BIT, Rxbuffer, 6, 100);
+
+	for(uint8_t i=0; i<3; i++){
+		euler[i] = (double)((Rxbuffer[i*2+1] << 8) | Rxbuffer[i*2])/16/180*PI;
+	}
+}
+
+void ReadGrvVector(I2C_HandleTypeDef *hi2c, double vector[3], uint8_t address){
+	uint8_t Rxbuffer[10];
+	HAL_I2C_Mem_Read(hi2c, BNO055_I2C_ADDR1 << 1, BNO055_GRAVITY_DATA_X_LSB_ADDR, I2C_MEMADD_SIZE_8BIT, Rxbuffer, BNO055_GRAVITY_XYZ_DATA_SIZE, 100);
+
+	for(uint8_t i=0; i<3; i++){
+		int16_t b = (Rxbuffer[i*2+1] << 8) | Rxbuffer[i*2];
+		vector[i] = (double)b / 100;
+	}
+}
+
+void ReadQuarternion(I2C_HandleTypeDef *hi2c, quaternion *q){
+	uint8_t Rxbuffer[8] = {};
+	HAL_I2C_Mem_Read(hi2c, BNO055_I2C_ADDR1 << 1, BNO055_QUATERNION_DATA_W_LSB_ADDR, I2C_MEMADD_SIZE_8BIT, Rxbuffer, BNO055_QUATERNION_WXYZ_DATA_SIZE, 100);
+
+	q->w = (double)((int16_t)(Rxbuffer[0] | (Rxbuffer[1] << 8)) / (double)pow(2, 14));
+	q->x = (double)((int16_t)(Rxbuffer[2] | (Rxbuffer[3] << 8)) / (double)pow(2, 14));
+	q->y = (double)((int16_t)(Rxbuffer[4] | (Rxbuffer[5] << 8)) / (double)pow(2, 14));
+	q->z = (double)((int16_t)(Rxbuffer[6] | (Rxbuffer[7] << 8)) / (double)pow(2, 14));
+}
+
+void SlopeStateSend(uint8_t state, double angle){
+	fdcan1_TxHeader.DataLength = FDCAN_DLC_BYTES_3;
+	fdcan1_TxHeader.Identifier = CANID_SLOPE_DETECTION;
+
+	//printf("send:%d\r\n", state);
+	uint8_t fdcan1_TxData[3] = {state, (uint8_t)(angle * 4000), (uint8_t)(gFieldPlacement.slopeAngleDiff * 4000)};
+	if(HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan1, &fdcan1_TxHeader, fdcan1_TxData) != HAL_OK){
+		Error_Handler();
+	}
+}
+
 void RobotVelFB(void){
-	uint8_t fdcan1_TxData[3] = {};
+	uint8_t fdcan1_TxData[4] = {};
 	double gain[3] = {16, 16, 0.02};
 	for(uint8_t i=0; i<3; i++){
 		if(gRobotPos.actVel[i]/16 + 127 > 255){
@@ -293,7 +446,13 @@ void RobotVelFB(void){
 		int8_t buffer = gRobotPos.actVel[i]/gain[i] + 127;
 		fdcan1_TxData[i] |= buffer;
 	}
-	fdcan1_TxHeader.DataLength = FDCAN_DLC_BYTES_3;
+
+	fdcan1_TxData[3] = (uint8_t)(40 * gRobotPos.actPos[2] + 127	);
+	if(is_field_init == FALSE){
+		fdcan1_TxData[3] = 127;
+	}
+
+	fdcan1_TxHeader.DataLength = FDCAN_DLC_BYTES_4;
 	fdcan1_TxHeader.Identifier = CANID_ROBOT_VEL_FB;
 
 	if(HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan1, &fdcan1_TxHeader, fdcan1_TxData) != HAL_OK){
@@ -335,13 +494,27 @@ int main(void)
   MX_FDCAN3_Init();
   MX_TIM17_Init();
   MX_FDCAN1_Init();
-  MX_IWDG_Init();
+  MX_I2C1_Init();
+  MX_TIM7_Init();
   /* USER CODE BEGIN 2 */
   RobotControllerInit();
   MotorControllerInit();
   RobotPhyParamInit();
-  printf("Initialized\r\n");
+  HAL_Delay(100);
+  while(gMotors[0].actVel != 0 && gMotors[1].actVel != 0 && gMotors[2].actVel != 0 && gMotors[3].actVel != 0){
+	  HAL_Delay(200);
+	  int32_t vel[4] = {};
+	  CAN_Motordrive(vel);
+  }
+  BNO055_Init();
   HAL_TIM_Base_Start_IT(&htim17);
+
+  FieldPlacementInit();
+  FieldPlacementUpdate();
+
+  HAL_TIM_Base_Start_IT(&htim7);
+  printf("Initialized\r\n");
+
 
 
   /* USER CODE END 2 */
@@ -350,6 +523,37 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
+	  uint8_t Rxbuff;
+	  HAL_I2C_Mem_Read(&hi2c1, 0x28 << 1, BNO055_CALIB_STAT_ADDR, I2C_MEMADD_SIZE_8BIT, &Rxbuff, 1, 100);
+	  printf("Calibration status:%x\r\n", Rxbuff);
+
+//	  quaternion q0;
+//	  q0.w = 0.701355;
+//	  q0.x = -0.677979;
+//	  q0.y = 0.148743;
+//	  q0.z = -0.161987;
+//
+//	  quaternion q;
+//	  ReadQuarternion(&hi2c1, &q);
+//	  printf("q.w: %f\r\n", q.w);
+//	  printf("q.x: %f\r\n", q.x);
+//	  printf("q.y: %f\r\n", q.y);
+//	  printf("q.z: %f\r\n", q.z);
+//
+//	  double heading = quaternion_to_heading(q);
+//	  printf("heading: %f\r\n", heading);
+
+//	  quaternion q_r = quaternion_multiply(q, quaternion_inverse(q0));
+
+
+#ifdef GET_CALIB_DATA
+	  uint8_t rx_buffer[23];
+	  HAL_I2C_Mem_Read(&hi2c1, 0x28 << 1, BNO055_ACCEL_OFFSET_X_LSB_ADDR, I2C_MEMADD_SIZE_8BIT, rx_buffer, 1, 100);
+	  for(uint8_t i=0; i<22; i++){
+		  printf("address %d: %d\r\n", i, rx_buffer[i]);
+	  }
+#endif
+	  HAL_Delay(1000);
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
@@ -373,10 +577,9 @@ void SystemClock_Config(void)
   /** Initializes the RCC Oscillators according to the specified parameters
   * in the RCC_OscInitTypeDef structure.
   */
-  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI|RCC_OSCILLATORTYPE_LSI;
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
   RCC_OscInitStruct.HSIState = RCC_HSI_ON;
   RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
-  RCC_OscInitStruct.LSIState = RCC_LSI_ON;
   RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
   RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSI;
   RCC_OscInitStruct.PLL.PLLM = RCC_PLLM_DIV1;
@@ -546,31 +749,50 @@ static void MX_FDCAN3_Init(void)
 }
 
 /**
-  * @brief IWDG Initialization Function
+  * @brief I2C1 Initialization Function
   * @param None
   * @retval None
   */
-static void MX_IWDG_Init(void)
+static void MX_I2C1_Init(void)
 {
 
-  /* USER CODE BEGIN IWDG_Init 0 */
+  /* USER CODE BEGIN I2C1_Init 0 */
 
-  /* USER CODE END IWDG_Init 0 */
+  /* USER CODE END I2C1_Init 0 */
 
-  /* USER CODE BEGIN IWDG_Init 1 */
+  /* USER CODE BEGIN I2C1_Init 1 */
 
-  /* USER CODE END IWDG_Init 1 */
-  hiwdg.Instance = IWDG;
-  hiwdg.Init.Prescaler = IWDG_PRESCALER_16;
-  hiwdg.Init.Window = 1000;
-  hiwdg.Init.Reload = 1000;
-  if (HAL_IWDG_Init(&hiwdg) != HAL_OK)
+  /* USER CODE END I2C1_Init 1 */
+  hi2c1.Instance = I2C1;
+  hi2c1.Init.Timing = 0x00702991;
+  hi2c1.Init.OwnAddress1 = 0;
+  hi2c1.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
+  hi2c1.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
+  hi2c1.Init.OwnAddress2 = 0;
+  hi2c1.Init.OwnAddress2Masks = I2C_OA2_NOMASK;
+  hi2c1.Init.GeneralCallMode = I2C_GENERALCALL_DISABLE;
+  hi2c1.Init.NoStretchMode = I2C_NOSTRETCH_DISABLE;
+  if (HAL_I2C_Init(&hi2c1) != HAL_OK)
   {
     Error_Handler();
   }
-  /* USER CODE BEGIN IWDG_Init 2 */
 
-  /* USER CODE END IWDG_Init 2 */
+  /** Configure Analogue filter
+  */
+  if (HAL_I2CEx_ConfigAnalogFilter(&hi2c1, I2C_ANALOGFILTER_ENABLE) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure Digital filter
+  */
+  if (HAL_I2CEx_ConfigDigitalFilter(&hi2c1, 0) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN I2C1_Init 2 */
+
+  /* USER CODE END I2C1_Init 2 */
 
 }
 
@@ -618,6 +840,44 @@ static void MX_LPUART1_UART_Init(void)
   /* USER CODE BEGIN LPUART1_Init 2 */
 
   /* USER CODE END LPUART1_Init 2 */
+
+}
+
+/**
+  * @brief TIM7 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM7_Init(void)
+{
+
+  /* USER CODE BEGIN TIM7_Init 0 */
+
+  /* USER CODE END TIM7_Init 0 */
+
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+
+  /* USER CODE BEGIN TIM7_Init 1 */
+
+  /* USER CODE END TIM7_Init 1 */
+  htim7.Instance = TIM7;
+  htim7.Init.Prescaler = 7999;
+  htim7.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim7.Init.Period = 9999;
+  htim7.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim7) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim7, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM7_Init 2 */
+
+  /* USER CODE END TIM7_Init 2 */
 
 }
 
@@ -745,6 +1005,78 @@ void RobotControllerInit(void){
 	}
 }
 
+void BNO055_Init(void){
+	HAL_Delay(700);
+	uint8_t Txbuff;
+	uint8_t Rxbuff;
+	//char message[20];
+
+
+
+	//Txbuff = 0x20;
+	//HAL_I2C_Mem_Write(&hi2c1, 0x28 << 1, 0x3F, I2C_MEMADD_SIZE_8BIT, &Txbuff, 1, 100); //system trigger
+
+	Txbuff = 0x00;
+	HAL_I2C_Mem_Write(&hi2c1, 0x28 << 1, 0x3E, I2C_MEMADD_SIZE_8BIT, &Txbuff, 1, 100); //power mode
+
+	HAL_I2C_Mem_Read(&hi2c1, 0x28 << 1, 0x3D, I2C_MEMADD_SIZE_8BIT, &Rxbuff, 1, 100);
+	if(Rxbuff != 0){
+		printf("Not configuration mode\r\n");
+		Txbuff = 0;
+		HAL_I2C_Mem_Write(&hi2c1, 0x28 << 1, 0x3D, I2C_MEMADD_SIZE_8BIT, &Txbuff, 1, 100);//using Nine Degree of Freedom mode
+		printf("Set configuration mode\r\n");
+		HAL_Delay(20);
+	}
+
+//	HAL_I2C_Mem_Write(&hi2c1, 0x28 << 1, BNO055_ACCEL_OFFSET_X_LSB_ADDR, I2C_MEMADD_SIZE_8BIT, bno_calib_data, 22, 100);
+
+	//	axis remap
+	Txbuff = 0b001001;
+	HAL_I2C_Mem_Write(&hi2c1, 0x28 << 1, BNO055_AXIS_MAP_CONFIG_ADDR, I2C_MEMADD_SIZE_8BIT, &Txbuff, 1, 100);
+
+//	Txbuff = 0b00000110;
+//	HAL_I2C_Mem_Write(&hi2c1, 0x28 << 1, BNO055_AXIS_MAP_SIGN_ADDR, I2C_MEMADD_SIZE_8BIT, &Txbuff, 1, 100);
+
+
+	Txbuff = 0x0C;
+	HAL_I2C_Mem_Write(&hi2c1, 0x28 << 1, 0x3D, I2C_MEMADD_SIZE_8BIT, &Txbuff, 1, 100);//using Nine Degree of Freedom mode
+
+	HAL_Delay(20);
+
+
+
+	HAL_I2C_Mem_Read(&hi2c1, 0x28 << 1, 0x39, I2C_MEMADD_SIZE_8BIT, &Rxbuff, 1, 100);
+	printf("System Error:%d\r\n", Rxbuff);
+
+	HAL_I2C_Mem_Read(&hi2c1, 0x28 << 1, 0x3A, I2C_MEMADD_SIZE_8BIT, &Rxbuff, 1, 100);
+	printf("Error:%d\r\n", Rxbuff);
+
+	HAL_I2C_Mem_Read(&hi2c1, 0x28 << 1, 0x00, I2C_MEMADD_SIZE_8BIT, &Rxbuff, 1, 100);
+	printf("ID:%d\r\n", Rxbuff);
+
+	HAL_I2C_Mem_Read(&hi2c1, 0x28 << 1, 0x34, I2C_MEMADD_SIZE_8BIT, &Rxbuff, 1, 100);
+	printf("Temp:%d\r\n", Rxbuff);
+
+
+	double control_cycle = 0.01;
+	double cutoff_freq = 0.1;
+
+	gyroLPFsetting = low_pass_filter_init(cutoff_freq, control_cycle);
+
+	HAL_Delay(100);
+
+	/*
+	printf("BNO Calibration\r\n");
+	for(uint8_t i = 0; i < 10; i++){
+		HAL_I2C_Mem_Read(&hi2c1, 0x28 << 1, BNO055_ACCEL_CALIB_STAT_REG, I2C_MEMADD_SIZE_8BIT, &Rxbuff, 1, 100);
+		HAL_Delay(1000);
+	}
+
+	printf("Calibration Stats: %x\r\n", Rxbuff);
+*/
+}
+
+
 void MotorControllerInit(void){
 	double kp[4] = {12, 12, 12, 12};
 	double ki[4] = {0, 0, 0, 0};
@@ -763,8 +1095,6 @@ void MotorControllerInit(void){
 		gMotors[i].reductionRatio = 36;
 		pid_init(&gMotors[i].velPID, CONTROL_CYCLE, kp[i], kd[i], ki[i], 0, integral_min[i], integral_max[i]);
 	}
-
-	gLPFsettings = low_pass_filter_init(0.001, 1e3);
 }
 
 void RobotPhyParamInit(void){
@@ -784,6 +1114,115 @@ void RobotPhyParamInit(void){
 	}
 }
 
+void FieldPlacementInit(void){
+	gFieldPlacement.plane = PI/2;
+	gFieldPlacement.upward = 0;
+	gFieldPlacement.slope = PI/2 - 0.1;
+	gFieldPlacement.slopeAngleDiff = 0.1;
+	for(uint8_t i = 0; i < 3; i++){
+		gFieldPlacement.planeGrvVector[i] = 0;
+		gFieldPlacement.slopeGrvVector[i] = 0;
+	}
+}
+
+void FieldPlacementUpdate(void){
+	printf("Initializing field placement...\r\n");
+	printf("Put the robot facing upward of the field\r\n");
+
+	char header[24] = "Calibration starts in";
+	double buff[3] = {};
+
+//	CountDown(header, 2);
+	printf("Calibrating\r\n");
+	printf("DO NOT MOVE THE ROBOT\r\n");
+	field_placement fieldPlacementTemp = {0, 0, 0, {}, {}, 0.05};
+
+	for(uint8_t i = 0; i < 200; i++){
+//		if((gRobotPos.actVel[0] != 0 || gRobotPos.actVel[1] != 0) || gRobotPos.actVel[2] != 0){
+//			printf("Error: failed to get field upward\r\n");
+//			return ;
+//		}
+//		ReadEulerAngle(&hi2c1, buff, BNO055_I2C_ADDR1);
+		quaternion q;
+		ReadQuarternion(&hi2c1, &q);
+		double heading = quaternion_to_heading(q);
+		fieldPlacementTemp.upward = (fieldPlacementTemp.upward * i + heading) / (i+1);
+		HAL_Delay(10);
+		ReadGrvVector(&hi2c1, buff, BNO055_I2C_ADDR1);
+		for(uint8_t j = 0; j<3; j++){
+			fieldPlacementTemp.planeGrvVector[j] = (fieldPlacementTemp.planeGrvVector[j] * i + buff[j]) / (i+1);
+		}
+	}
+
+	printf("Pass: get field upward:%f\r\n", fieldPlacementTemp.upward);
+/*	printf("Pass: get plane grv vector: X:%f / Y:%f / Z:%f\r\n", fieldPlacementTemp.planeGrvVector[0], fieldPlacementTemp.planeGrvVector[1], fieldPlacementTemp.planeGrvVector[2]);
+
+	printf("Put the robot on the slope\r\n");
+	HAL_Delay(1000);
+	CountDown(header, 10);
+	printf("Calibrating\r\n");
+
+	printf("DO NOT MOVE THE ROBOT\r\n");
+	fieldPlacementTemp.slope = gRobotPos.actPos[3];
+	for(uint8_t i = 0; i < 200; i++){
+//		if((gRobotPos.actVel[0] != 0 || gRobotPos.actVel[1] != 0) || gRobotPos.actVel[2] != 0){
+//			printf("Error: failed to get field slope\r\n");
+//			return ;
+//		}
+
+		ReadGrvVector(&hi2c1, buff, BNO055_I2C_ADDR1);
+		for(uint8_t j = 0; j<3; j++){
+			fieldPlacementTemp.slopeGrvVector[j] = (fieldPlacementTemp.slopeGrvVector[j] * i + buff[j]) / (i+1);
+		}
+		HAL_Delay(10);
+	}
+
+	printf("Pass: get slope grv vector: X:%f / Y:%f / Z:%f\r\n", fieldPlacementTemp.slopeGrvVector[0], fieldPlacementTemp.slopeGrvVector[1], fieldPlacementTemp.slopeGrvVector[2]);
+*/
+	gFieldPlacement.plane = fieldPlacementTemp.plane;
+//	gFieldPlacement.slope = fieldPlacementTemp.slope;
+	gFieldPlacement.upward = fieldPlacementTemp.upward;
+	memmove(gFieldPlacement.planeGrvVector, fieldPlacementTemp.planeGrvVector, 24);
+//	memmove(gFieldPlacement.slopeGrvVector, fieldPlacementTemp.slopeGrvVector, 24);
+
+	gFieldPlacement.slopeAngleDiff = SLOPEANGLE;
+
+	printf("Field data updated\r\n");
+	printf("---------RESULT----------\n upward: %6.4f / slope angle:%6.4f\r\n", gFieldPlacement.upward, gFieldPlacement.slopeAngleDiff);
+	printf("Plane grv vector: X:%f / Y:%f / Z:%f\r\n", fieldPlacementTemp.planeGrvVector[0], fieldPlacementTemp.planeGrvVector[1], fieldPlacementTemp.planeGrvVector[2]);
+
+	is_field_init = TRUE;
+
+}
+
+void CountDown(char header[], uint8_t time){
+	if(time < 1) return;
+	for(;time >=1 ; time--){
+		printf("%s %d sec\r\n", header, time);
+		HAL_Delay(1000);
+	}
+}
+
+double CalcVectorAngle(double vector1[3], double vector2[3]){
+	double dotp = 0;//dot product
+
+	double len1 = 0;//length of vector1
+	double len2 = 0;//length of vector2
+
+	double sqlen1 = 0;//squared length of vector1
+	double sqlen2 = 0;//squared length of vector2
+
+	for(uint8_t i = 0; i < 3; i++){
+		dotp += vector1[i] * vector2[i];
+		sqlen1 += pow(vector1[i], 2);
+		sqlen2 += pow(vector2[i], 2);
+	}
+
+	len1 = sqrt(sqlen1);
+	len2 = sqrt(sqlen2);
+
+	return acos(dotp / (len1 * len2));
+}
 /* USER CODE END 4 */
 
 /**

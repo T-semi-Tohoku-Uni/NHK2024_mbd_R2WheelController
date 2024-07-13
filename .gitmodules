@@ -4,3 +4,6 @@
 [submodule "Core/NHK2024_Library"]
 	path = Core/NHK2024_Library
 	url = git@github.com:T-semi-Tohoku-Uni/NHK2024_Library.git
+[submodule "Core/BNO055_SensorAPI"]
+	path = Core/BNO055_SensorAPI
+	url = git@github.com:boschsensortec/BNO055_SensorAPI.git
